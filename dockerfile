@@ -6,6 +6,5 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py .
-COPY db.py .          # если файл db.py существует
 
 CMD ["python", "bot.py"]
