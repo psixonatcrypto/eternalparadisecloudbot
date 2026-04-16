@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
 import logging
-import sqlite3
+import sqlite3                    # исправлено: sqlite3, а не sqliite3
 from uuid import uuid4
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- Переменные окружения (без .env) ---
-BOT_TOKEN = os.getenv("8696097579:AAFd9g6SSRXJHucfq_bqL0cyU4dlirybg_A")
-CHANNEL_ID = os.getenv("@eternalparadisecloudbot")
+BOT_TOKEN = os.getenv("8696097579:AAFd9g6SSRXJHucfq_bqL0cyU4dlirybg_A")        # получаем значение переменной с именем "BOT_TOKEN"
+CHANNEL_ID = os.getenv("@eternalparadisecloudbot")      # получаем значение переменной с именем "CHANNEL_ID"
 DB_NAME = "files.db"
 
 if not BOT_TOKEN:
