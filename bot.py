@@ -139,7 +139,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "👋 Привет! Я бот-файлообменник.\n"
-        "Отправь мне любой файл – я сохраню его в канале и дам ключ.\n"
+        "Отправь мне любой файл – я сохраню его в облаке и дам ссылку.\n"
         "Используй кнопки ниже:",
         reply_markup=main_keyboard()
     )
