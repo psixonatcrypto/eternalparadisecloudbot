@@ -8,7 +8,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # --- Переменные окружения (правильно!) ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+CHANNEL_ID = --- os.geten ---("@eternalparadisecloudbot")
 DB_NAME = "files.db"
 
 if not BOT_TOKEN:
