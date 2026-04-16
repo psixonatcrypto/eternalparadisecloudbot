@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
 import logging
-import sqlite3                    # исправлено: sqlite3, а не sqliite3
+import sqlite3
 from uuid import uuid4
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- Переменные окружения (без .env) ---
-BOT_TOKEN = os.getenv("8696097579:AAFd9g6SSRXJHucfq_bqL0cyU4dlirybg_A")        # получаем значение переменной с именем "BOT_TOKEN"
-CHANNEL_ID = os.getenv("@eternalparadisecloudbot")      # получаем значение переменной с именем "CHANNEL_ID"
+# --- Переменные окружения (правильно!) ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 DB_NAME = "files.db"
 
 if not BOT_TOKEN:
@@ -17,7 +17,7 @@ if not CHANNEL_ID:
     raise ValueError("CHANNEL_ID не задан в переменных окружения")
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(name)
 
 # --- Работа с базой данных ---
 def init_db():
@@ -58,7 +58,7 @@ def delete_file_info(key):
     conn.commit()
     conn.close()
 
-# --- Команды ---
+# --- Команды бота ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Отправь мне любой файл – я сохраню его в канале и дам ссылку.\n"
@@ -99,7 +99,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id)
         link = f"https://t.me/{CHANNEL_ID.lstrip('@')}/{sent.message_id}"
         await update.message.reply_text(
-            f"✅ Файл *{filename}* сохранён!\n\n🔗 {link}\n\n📌 Ключ: `{key}`\n/get {key}",
+            f"✅ Файл *{filename}* сохранён!\n\n🔗 {link}\n\n📌 Ключ: {key}\n/get {key}",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -108,7 +108,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Укажите ключ: `/get ключ`", parse_mode="Markdown")
+        await update.message.reply_text("Укажите ключ: /get ключ", parse_mode="Markdown")
         return
     key = context.args[0]
     info = get_file_info(key)
@@ -119,12 +119,12 @@ async def get_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Укажите ключ: `/delete ключ`", parse_mode="Markdown")
+        await update.message.reply_text("Укажите ключ: /delete ключ", parse_mode="Markdown")
         return
     key = context.args[0]
     if get_file_info(key):
         delete_file_info(key)
-        await update.message.reply_text(f"✅ Ключ `{key}` удалён.")
+        await update.message.reply_text(f"✅ Ключ {key} удалён.")
     else:
         await update.message.reply_text("❌ Ключ не найден.")
 
@@ -142,5 +142,5 @@ def main():
     logger.info("Бот запущен")
     app.run_polling()
 
-if __name__ == "__main__":
+if name == "main":
     main()
