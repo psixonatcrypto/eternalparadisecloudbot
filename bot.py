@@ -24,7 +24,7 @@ if not BOT_TOKEN or not CHANNEL_ID:
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Веб-сервер для бодрствования (не даёт боту заснуть) ---
+# --- Веб-сервер для бодрствования ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -47,6 +47,7 @@ def init_db():
         chat_id TEXT,
         message_id INTEGER,
         media_type TEXT,
+        user_id INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -58,11 +59,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_file_info(key, file_id, filename, chat_id, message_id, media_type):
+def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type) VALUES (?, ?, ?, ?, ?, ?)',
-              (key, file_id, filename, chat_id, message_id, media_type))
+    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              (key, file_id, filename, chat_id, message_id, media_type, user_id))
     conn.commit()
     conn.close()
 
@@ -83,6 +84,17 @@ def delete_file_info(key):
     conn.commit()
     conn.close()
 
+def get_user_files(user_id, limit=10, offset=0):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT key, filename, created_at FROM files WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+              (user_id, limit, offset))
+    rows = c.fetchall()
+    c.execute('SELECT COUNT(*) FROM files WHERE user_id = ?', (user_id,))
+    total = c.fetchone()[0]
+    conn.close()
+    return rows, total
+
 def save_user(user_id, first_name, username):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -99,12 +111,32 @@ def get_all_users():
     conn.close()
     return [row[0] for row in rows]
 
+def get_total_files():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM files')
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+def get_new_users_count(days=0):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    if days > 0:
+        c.execute('SELECT COUNT(*) FROM users WHERE last_seen >= datetime("now", ?)', (f"-{days} days",))
+    else:
+        c.execute('SELECT COUNT(*) FROM users')
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
 # --- Клавиатуры ---
 def main_keyboard():
     keyboard = [
         [InlineKeyboardButton("📤 Загрузить файл", callback_data="upload")],
         [InlineKeyboardButton("🔍 Получить по ключу", callback_data="get_prompt")],
         [InlineKeyboardButton("❌ Удалить по ключу", callback_data="delete_prompt")],
+        [InlineKeyboardButton("📁 Мои файлы", callback_data="my_files_0")],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -112,11 +144,28 @@ def main_keyboard():
 def file_actions_keyboard(key):
     deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
     keyboard = [
-        [InlineKeyboardButton("📥 Скачать файл", callback_data=f"download_{key}")],
+        [InlineKeyboardButton("📥 Скачать файл", url=deep_link)],
         [InlineKeyboardButton("🔗 Поделиться ссылкой", callback_data=f"share_{key}")],
         [InlineKeyboardButton("📋 Копировать ключ", callback_data=f"copy_{key}")],
         [InlineKeyboardButton("❌ Удалить файл", callback_data=f"delete_{key}")]
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+def my_files_keyboard(page, total_pages, files):
+    keyboard = []
+    for key, filename, created_at in files:
+        deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
+        keyboard.append([InlineKeyboardButton(f"📄 {filename[:30]}", url=deep_link)])
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"my_files_{page-1}"))
+    if page + 1 < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"my_files_{page+1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(keyboard)
 
 # --- Вспомогательная отправка файла ---
@@ -162,63 +211,61 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "📌 *Как пользоваться:*\n"
-        "1. Отправьте файл – получу ключ и кнопки.\n"
-        "2. Нажмите «Скачать файл» – бот пришлёт файл сюда.\n"
-        "3. Нажмите «Поделиться ссылкой» – получите ссылку для отправки другим.\n"
-        "4. Нажмите «Удалить файл» – удалит файл из канала и ссылку.\n\n"
+        "1. Отправьте файл – получу ссылку.\n"
+        "2. Нажмите «Мои файлы» – увидите все свои файлы.\n"
+        "3. Нажмите на файл – сразу скачается.\n\n"
         "Команды: /get <ключ>, /delete <ключ>\n\n"
-        "Если вы обнаружили баг, сообщите нам: @Eternal_paradise_supbot",
+        "Если обнаружили баг: @Eternal_paradise_supbot",
         parse_mode="Markdown"
     )
 
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
+async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    files, total = get_user_files(user_id, limit=10, offset=page * 10)
+    
+    if not files:
+        text = "📁 *У вас пока нет файлов*\n\nОтправьте файл боту, и он появится здесь."
+        if query:
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")]]))
+            await query.answer()
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")]]))
         return
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Только администратор может использовать эту команду.")
-        return
-    text = " ".join(context.args)
-    if not text:
-        await update.message.reply_text("Укажите текст рассылки после /broadcast")
-        return
-    users = get_all_users()
-    if not users:
-        await update.message.reply_text("Нет пользователей в базе.")
-        return
-    sent = 0
-    failed = 0
-    for uid in users:
-        try:
-            await context.bot.send_message(chat_id=uid, text=text)
-            sent += 1
-        except Exception as e:
-            logger.error(f"Не удалось отправить {uid}: {e}")
-            failed += 1
-        await asyncio.sleep(0.05)
-    await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
+    
+    total_pages = (total + 9) // 10
+    text = f"📁 *Ваши файлы (страница {page + 1} из {total_pages}):*\n\n"
+    
+    if query:
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=my_files_keyboard(page, total_pages, files))
+        await query.answer()
+    else:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=my_files_keyboard(page, total_pages, files))
 
-async def delete_by_key_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Недоступно.")
+        await update.message.reply_text("⛔ Только администратор.")
         return
-    if not context.args:
-        await update.message.reply_text("❌ Укажите ключ: `/delkey ключ`")
-        return
-    key = context.args[0]
-    info = get_file_info(key)
-    if not info:
-        await update.message.reply_text(f"❌ Ключ `{key}` не найден.")
-        return
-    try:
-        await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
-        await update.message.reply_text(f"✅ Файл с ключом `{key}` удалён из канала.")
-    except Exception as e:
-        logger.error(f"Не удалось удалить из канала: {e}")
-        await update.message.reply_text(f"⚠ Не удалось удалить файл из канала.")
-    delete_file_info(key)
-    await update.message.reply_text(f"✅ Запись с ключом `{key}` удалена из базы данных.")
+    
+    total_users = get_new_users_count()
+    today_users = get_new_users_count(1)
+    week_users = get_new_users_count(7)
+    month_users = get_new_users_count(30)
+    total_files = get_total_files()
+    
+    text = f"📊 *Статистика бота*\n\n"
+    text += f"👥 *Пользователи:*\n"
+    text += f"• Всего: {total_users}\n"
+    text += f"• За сегодня: {today_users}\n"
+    text += f"• За неделю: {week_users}\n"
+    text += f"• За месяц: {month_users}\n\n"
+    text += f"📁 *Файлы:*\n"
+    text += f"• Всего загружено: {total_files}\n"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -265,11 +312,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=f"📁 Файл от {user.first_name} | Ключ: {key}")
 
-        save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type)
+        save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user.id)
+        deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         await update.message.reply_text(
             f"✅ Файл *{filename}* сохранён!\n\n"
+            f"🔗 *Ссылка для скачивания:*\n{deep_link}\n\n"
             f"📌 Ключ: `{key}`\n\n"
-            f"Нажмите кнопку ниже, чтобы скачать файл сюда:",
+            f"Вы можете найти файл в разделе «Мои файлы».",
             parse_mode="Markdown",
             reply_markup=file_actions_keyboard(key)
         )
@@ -331,6 +380,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         return
     data = query.data
+    
     if data == "upload":
         await query.answer("Просто отправьте мне любой файл")
     elif data == "get_prompt":
@@ -339,17 +389,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "delete_prompt":
         await query.message.reply_text("Введите ключ командой: `/delete ключ`", parse_mode="Markdown")
         await query.answer()
-    elif data == "help":
-        await query.message.reply_text(
-            "📌 *Справка*\n\n"
-            "Отправьте файл – получу ключ.\n"
-            "Нажмите «Скачать файл» – бот пришлёт файл сюда.\n"
-            "Нажмите «Поделиться ссылкой» – получите ссылку для отправки другим.\n"
-            "Нажмите «Удалить файл» – удалит файл из канала и ссылку.\n\n"
-            "Команды: /get ключ, /delete ключ",
-            parse_mode="Markdown"
+    elif data == "main_menu":
+        await query.message.edit_text(
+            "👋 Главное меню\n\nИспользуйте кнопки ниже:",
+            reply_markup=main_keyboard()
         )
         await query.answer()
+    elif data == "help":
+        await query.message.edit_text(
+            "📌 *Как пользоваться:*\n"
+            "1. Отправьте файл – получу ссылку.\n"
+            "2. Нажмите «Мои файлы» – увидите все свои файлы.\n"
+            "3. Нажмите на файл – сразу скачается.\n\n"
+            "Команды: /get <ключ>, /delete <ключ>\n\n"
+            "Если обнаружили баг: @Eternal_paradise_supbot",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
+        )
+        await query.answer()
+    elif data.startswith("my_files_"):
+        page = int(data.split("_")[2])
+        await my_files(update, context, page)
     elif data.startswith("copy_"):
         key = data[5:]
         await query.answer(f"Ключ: {key}", show_alert=True)
@@ -396,6 +456,32 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delete_file_info(key)
     await update.message.reply_text(f"✅ Ключ `{key}` и файл в канале удалены.")
 
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("Укажите текст рассылки после /broadcast")
+        return
+    users = get_all_users()
+    if not users:
+        await update.message.reply_text("Нет пользователей в базе.")
+        return
+    sent = 0
+    failed = 0
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=uid, text=text)
+            sent += 1
+        except Exception as e:
+            logger.error(f"Не удалось отправить {uid}: {e}")
+            failed += 1
+        await asyncio.sleep(0.05)
+    await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
+
 # --- Запуск ---
 def main():
     init_db()
@@ -405,13 +491,13 @@ def main():
     app.add_handler(CommandHandler("get", get_command))
     app.add_handler(CommandHandler("delete", delete_command))
     app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("delkey", delete_by_key_admin))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE,
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (с веб-сервером для бодрствования)")
+    logger.info("Бот запущен")
     app.run_polling()
 
 if __name__ == "__main__":
