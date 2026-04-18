@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import asyncio
 import threading
+import datetime
 from uuid import uuid4
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -48,6 +49,14 @@ def init_db():
         message_id INTEGER,
         media_type TEXT,
         user_id INTEGER,
+        folder_id INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        parent_id INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -59,11 +68,59 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id):
+# --- Работа с папками ---
+def create_folder(user_id, name, parent_id=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              (key, file_id, filename, chat_id, message_id, media_type, user_id))
+    c.execute('INSERT INTO folders (name, user_id, parent_id) VALUES (?, ?, ?)', (name, user_id, parent_id))
+    folder_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return folder_id
+
+def delete_folder(folder_id, user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    # Удаляем все файлы в папке
+    c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
+    # Удаляем все подпапки
+    c.execute('DELETE FROM folders WHERE parent_id = ? AND user_id = ?', (folder_id, user_id))
+    # Удаляем саму папку
+    c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
+    conn.commit()
+    conn.close()
+
+def get_user_folders(user_id, parent_id=0):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT id, name FROM folders WHERE user_id = ? AND parent_id = ? ORDER BY name', (user_id, parent_id))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT key, filename, created_at FROM files WHERE user_id = ? AND folder_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+              (user_id, folder_id, limit, offset))
+    rows = c.fetchall()
+    c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND folder_id = ?', (user_id, folder_id))
+    total = c.fetchone()[0]
+    conn.close()
+    return rows, total
+
+def move_file_to_folder(file_key, folder_id, user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE files SET folder_id = ? WHERE key = ? AND user_id = ?', (folder_id, file_key, user_id))
+    conn.commit()
+    conn.close()
+
+def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+              (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id))
     conn.commit()
     conn.close()
 
@@ -83,17 +140,6 @@ def delete_file_info(key):
     c.execute('DELETE FROM files WHERE key = ?', (key,))
     conn.commit()
     conn.close()
-
-def get_user_files(user_id, limit=10, offset=0):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT key, filename, created_at FROM files WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-              (user_id, limit, offset))
-    rows = c.fetchall()
-    c.execute('SELECT COUNT(*) FROM files WHERE user_id = ?', (user_id,))
-    total = c.fetchone()[0]
-    conn.close()
-    return rows, total
 
 def save_user(user_id, first_name, username):
     conn = sqlite3.connect(DB_NAME)
@@ -136,7 +182,7 @@ def main_keyboard():
         [InlineKeyboardButton("📤 Загрузить файл", callback_data="upload")],
         [InlineKeyboardButton("🔍 Получить по ключу", callback_data="get_prompt")],
         [InlineKeyboardButton("❌ Удалить по ключу", callback_data="delete_prompt")],
-        [InlineKeyboardButton("📁 Мои файлы", callback_data="my_files_0")],
+        [InlineKeyboardButton("📁 Мои файлы", callback_data="my_files_root")],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -144,40 +190,67 @@ def main_keyboard():
 def file_actions_keyboard(key):
     deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
     keyboard = [
-        [InlineKeyboardButton("📥 Скачать файл", url=deep_link)],
-        [InlineKeyboardButton("🔗 Поделиться ссылкой", callback_data=f"share_{key}")],
-        [InlineKeyboardButton("📋 Копировать ключ", callback_data=f"copy_{key}")],
-        [InlineKeyboardButton("❌ Удалить файл", callback_data=f"delete_{key}")]
+        [InlineKeyboardButton("📥 Скачать", url=deep_link)],
+        [InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")],
+        [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def my_files_keyboard(page, total_pages, files):
+def folder_keyboard(user_id, parent_id=0, page=0, files_page=0):
+    folders = get_user_folders(user_id, parent_id)
+    files, total_files = get_user_files_in_folder(user_id, parent_id, limit=10, offset=files_page * 10)
+    
     keyboard = []
+    
+    # Папки
+    for folder_id, folder_name in folders:
+        keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"open_folder_{folder_id}_{parent_id}_{page}_{files_page}")])
+    
+    # Файлы (показываем как ссылки)
     for key, filename, created_at in files:
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         keyboard.append([InlineKeyboardButton(f"📄 {filename[:30]}", url=deep_link)])
     
+    # Навигация по файлам
     nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"my_files_{page-1}"))
-    if page + 1 < total_pages:
-        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"my_files_{page+1}"))
+    if files_page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Файлы назад", callback_data=f"files_page_{parent_id}_{page}_{files_page-1}"))
+    if (files_page + 1) * 10 < total_files:
+        nav_buttons.append(InlineKeyboardButton("Файлы вперёд ▶️", callback_data=f"files_page_{parent_id}_{page}_{files_page+1}"))
     if nav_buttons:
         keyboard.append(nav_buttons)
     
-    keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
+    # Кнопки действий
+    action_buttons = []
+    action_buttons.append(InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{page}_{files_page}"))
+    action_buttons.append(InlineKeyboardButton("📤 Добавить файл", callback_data="upload"))
+    keyboard.append(action_buttons)
+    
+    # Кнопка "Назад"
+    if parent_id != 0:
+        # Найти родительскую папку
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT parent_id FROM folders WHERE id = ? AND user_id = ?', (parent_id, user_id))
+        row = c.fetchone()
+        conn.close()
+        back_parent = row[0] if row else 0
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"my_files_{back_parent}")])
+    else:
+        keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
+    
     return InlineKeyboardMarkup(keyboard)
 
 # --- Вспомогательная отправка файла ---
 async def send_file_by_info(chat_id, info, key, bot):
     if info["media_type"] == "photo":
-        await bot.send_photo(chat_id=chat_id, photo=info["file_id"], caption=f"📸 Ваше фото по ключу `{key}`")
+        await bot.send_photo(chat_id=chat_id, photo=info["file_id"], caption=f"📸 Ваше фото")
     elif info["media_type"] == "video":
-        await bot.send_video(chat_id=chat_id, video=info["file_id"], caption=f"🎬 Ваше видео по ключу `{key}`")
+        await bot.send_video(chat_id=chat_id, video=info["file_id"], caption=f"🎬 Ваше видео")
     elif info["media_type"] == "audio":
-        await bot.send_audio(chat_id=chat_id, audio=info["file_id"], caption=f"🎵 Ваш аудиофайл по ключу `{key}`")
+        await bot.send_audio(chat_id=chat_id, audio=info["file_id"], caption=f"🎵 Ваш аудиофайл")
     elif info["media_type"] == "voice":
-        await bot.send_voice(chat_id=chat_id, voice=info["file_id"], caption=f"🎙️ Ваше голосовое по ключу `{key}`")
+        await bot.send_voice(chat_id=chat_id, voice=info["file_id"], caption=f"🎙️ Ваше голосовое")
     else:
         await bot.send_document(chat_id=chat_id, document=info["file_id"], filename=info["filename"])
 
@@ -201,7 +274,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "👋 Привет! Я бот-файлообменник.\n"
-        "Отправь мне любой файл – я сохраню его в облаке и дам ссылку.\n"
+        "Отправь мне любой файл – я сохраню его в облаке.\n"
         "Используй кнопки ниже:",
         reply_markup=main_keyboard()
     )
@@ -212,36 +285,48 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 *Как пользоваться:*\n"
         "1. Отправьте файл – получу ссылку.\n"
-        "2. Нажмите «Мои файлы» – увидите все свои файлы.\n"
-        "3. Нажмите на файл – сразу скачается.\n\n"
+        "2. Нажмите «Мои файлы» – увидите папки и файлы.\n"
+        "3. Создавайте папки, перемещайте файлы.\n\n"
         "Команды: /get <ключ>, /delete <ключ>\n\n"
         "Если обнаружили баг: @Eternal_paradise_supbot",
         parse_mode="Markdown"
     )
 
-async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
+async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id=0):
     query = update.callback_query
     user_id = update.effective_user.id
     
-    files, total = get_user_files(user_id, limit=10, offset=page * 10)
-    
-    if not files:
-        text = "📁 *У вас пока нет файлов*\n\nОтправьте файл боту, и он появится здесь."
-        if query:
-            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")]]))
-            await query.answer()
-        else:
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")]]))
-        return
-    
-    total_pages = (total + 9) // 10
-    text = f"📁 *Ваши файлы (страница {page + 1} из {total_pages}):*\n\n"
-    
+    text = "📁 *Ваши файлы и папки:*"
     if query:
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=my_files_keyboard(page, total_pages, files))
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id))
         await query.answer()
     else:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=my_files_keyboard(page, total_pages, files))
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id))
+
+async def new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, page, files_page):
+    query = update.callback_query
+    context.user_data['new_folder_parent'] = parent_id
+    context.user_data['new_folder_page'] = page
+    context.user_data['new_folder_files_page'] = files_page
+    await query.message.reply_text("📝 Введите название новой папки:")
+    await query.answer()
+
+async def handle_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    folder_name = update.message.text
+    parent_id = context.user_data.get('new_folder_parent', 0)
+    page = context.user_data.get('new_folder_page', 0)
+    files_page = context.user_data.get('new_folder_files_page', 0)
+    
+    user_id = update.effective_user.id
+    create_folder(user_id, folder_name, parent_id)
+    
+    await update.message.reply_text(f"✅ Папка «{folder_name}» создана!")
+    
+    # Возвращаемся в папку
+    text = "📁 *Ваши файлы и папки:*"
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id, page, files_page))
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -316,64 +401,15 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         await update.message.reply_text(
             f"✅ Файл *{filename}* сохранён!\n\n"
-            f"🔗 *Ссылка для скачивания:*\n{deep_link}\n\n"
+            f"🔗 *Ссылка:* {deep_link}\n"
             f"📌 Ключ: `{key}`\n\n"
-            f"Вы можете найти файл в разделе «Мои файлы».",
+            f"Вы можете переместить файл в папку через «Мои файлы».",
             parse_mode="Markdown",
             reply_markup=file_actions_keyboard(key)
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке в канал: {e}")
-        await update.message.reply_text("❌ Ошибка. Проверьте, что бот – администратор канала и канал публичный.")
-
-async def share_link(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
-    if not update.callback_query:
-        return
-    info = get_file_info(key)
-    if not info:
-        await update.callback_query.answer("❌ Файл не найден", show_alert=True)
-        return
-    deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
-    await update.callback_query.message.reply_text(
-        f"🔗 *Ссылка, чтобы поделиться файлом:*\n{deep_link}\n\n"
-        f"Кто угодно может перейти по ссылке и сразу получить файл.",
-        parse_mode="Markdown",
-        disable_web_page_preview=True
-    )
-    await update.callback_query.answer()
-
-async def download_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
-    if not update.callback_query:
-        return
-    info = get_file_info(key)
-    if not info:
-        await update.callback_query.answer("❌ Файл не найден", show_alert=True)
-        return
-    try:
-        await send_file_by_info(update.effective_chat.id, info, key, context.bot)
-        await update.callback_query.answer("✅ Файл отправлен!")
-    except Exception as e:
-        logger.error(f"Ошибка отправки файла: {e}")
-        await update.callback_query.answer("❌ Не удалось отправить файл", show_alert=True)
-
-async def delete_file_completely(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
-    if not update.callback_query:
-        return
-    info = get_file_info(key)
-    if not info:
-        await update.callback_query.answer("❌ Файл не найден", show_alert=True)
-        return
-    try:
-        await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
-        logger.info(f"Сообщение {info['message_id']} удалено из канала")
-    except Exception as e:
-        logger.error(f"Не удалось удалить сообщение из канала: {e}")
-    delete_file_info(key)
-    await update.callback_query.answer("✅ Файл удалён из канала и базы", show_alert=True)
-    try:
-        await update.callback_query.edit_message_reply_markup(reply_markup=None)
-    except:
-        pass
+        await update.message.reply_text("❌ Ошибка. Проверьте, что бот – администратор канала.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -399,29 +435,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(
             "📌 *Как пользоваться:*\n"
             "1. Отправьте файл – получу ссылку.\n"
-            "2. Нажмите «Мои файлы» – увидите все свои файлы.\n"
-            "3. Нажмите на файл – сразу скачается.\n\n"
+            "2. Нажмите «Мои файлы» – увидите папки и файлы.\n"
+            "3. Создавайте папки, перемещайте файлы.\n\n"
             "Команды: /get <ключ>, /delete <ключ>\n\n"
             "Если обнаружили баг: @Eternal_paradise_supbot",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
         )
         await query.answer()
+    elif data == "my_files_root":
+        await my_files(update, context, 0)
     elif data.startswith("my_files_"):
-        page = int(data.split("_")[2])
-        await my_files(update, context, page)
+        parent_id = int(data.split("_")[2])
+        await my_files(update, context, parent_id)
+    elif data.startswith("open_folder_"):
+        parts = data.split("_")
+        folder_id = int(parts[2])
+        await my_files(update, context, folder_id)
+    elif data.startswith("new_folder_"):
+        parts = data.split("_")
+        parent_id = int(parts[2])
+        page = int(parts[3])
+        files_page = int(parts[4])
+        await new_folder(update, context, parent_id, page, files_page)
     elif data.startswith("copy_"):
         key = data[5:]
         await query.answer(f"Ключ: {key}", show_alert=True)
-    elif data.startswith("share_"):
-        key = data[6:]
-        await share_link(update, context, key)
-    elif data.startswith("download_"):
-        key = data[9:]
-        await download_file(update, context, key)
     elif data.startswith("delete_"):
         key = data[7:]
-        await delete_file_completely(update, context, key)
+        info = get_file_info(key)
+        if info:
+            try:
+                await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
+            except:
+                pass
+            delete_file_info(key)
+            await query.answer("✅ Файл удалён", show_alert=True)
+            await query.message.edit_text("Файл удалён", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="my_files_root")]]))
     else:
         await query.answer()
 
@@ -492,12 +542,13 @@ def main():
     app.add_handler(CommandHandler("delete", delete_command))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_folder_name))
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE,
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен")
+    logger.info("Бот запущен (с папками)")
     app.run_polling()
 
 if __name__ == "__main__":
