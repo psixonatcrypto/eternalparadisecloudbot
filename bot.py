@@ -6,6 +6,8 @@ import asyncio
 import threading
 import hashlib
 import datetime
+import qrcode
+import io
 from uuid import uuid4
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,6 +20,28 @@ DB_NAME = "files.db"
 
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
+
+# Текст для кнопки "О проекте" (настройте под себя)
+ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
+
+Мы — игровое сообщество, объединяющее любителей разных игр.
+
+📢 *Наши ресурсы:*
+• Telegram канал: [Eternal Paradise](https://t.me/eternalparadise)
+• Telegram чат: [Общий чат](https://t.me/eternalparadisechat)
+• Discord: [Присоединиться](https://clck.ru/34QGq6)
+• ВКонтакте: [Eternal Paradise](https://vk.com/eternal.paradise)
+
+📁 *Бот-файлообменник* позволяет:
+• Хранить файлы в облаке
+• Устанавливать пароль на файлы
+• Создавать папки для организации
+• Выбирать срок хранения
+
+По всем вопросам: @Eternal_paradise_supbot
+С Ув. Eternal Paradise"""
+
+COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 @Eternal_paradise_supbot\n\nМы рассмотрим вашу жалобу в ближайшее время."
 # =================================
 
 if not BOT_TOKEN or not CHANNEL_ID:
@@ -182,6 +206,25 @@ def get_new_users_count(days=0):
     conn.close()
     return count
 
+# --- Генерация QR-кода ---
+async def generate_qr_code(data):
+    """Генерирует QR-код для ссылки"""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Сохраняем в байты
+    img_bytes = io.BytesIO()
+    img.save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+    return img_bytes
+
 # --- Клавиатуры ---
 def main_keyboard():
     keyboard = [
@@ -189,7 +232,9 @@ def main_keyboard():
         [InlineKeyboardButton("🔍 Получить по ключу", callback_data="get_prompt")],
         [InlineKeyboardButton("❌ Удалить по ключу", callback_data="delete_prompt")],
         [InlineKeyboardButton("📁 Мои файлы", callback_data="my_files_root")],
-        [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")]
+        [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
+        [InlineKeyboardButton("🌐 О проекте", callback_data="about")],
+        [InlineKeyboardButton("⚠️ Жалоба", callback_data="complaint")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -200,6 +245,7 @@ def file_actions_keyboard(key, has_password=False):
         keyboard.append([InlineKeyboardButton("🔓 Снять пароль", callback_data=f"unlock_{key}")])
     keyboard.append([InlineKeyboardButton("📥 Скачать", url=deep_link)])
     keyboard.append([InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")])
+    keyboard.append([InlineKeyboardButton("🔲 QR-код", callback_data=f"qr_{key}")])
     keyboard.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -234,7 +280,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     if parent_id == 0:
         keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}")])
     else:
-        # Кнопка удаления папки (только если не в корне)
         keyboard.append([InlineKeyboardButton("🗑 Удалить эту папку", callback_data=f"delete_folder_{parent_id}_{files_page}")])
     
     keyboard.append([InlineKeyboardButton("📤 Добавить файл", callback_data="upload")])
@@ -326,11 +371,48 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2. При желании установите пароль.\n"
         "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
         "4. Нажмите на файл – скачается.\n"
-        "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n\n"
+        "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n"
+        "6. У каждого файла есть кнопка «🔲 QR-код» для быстрого доступа.\n\n"
         "Команды: /get <ключ>, /delete <ключ>\n\n"
         "Если обнаружили баг: @Eternal_paradise_supbot",
         parse_mode="Markdown"
     )
+
+async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «О проекте»"""
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(ABOUT_TEXT, parse_mode="Markdown", disable_web_page_preview=True)
+
+async def complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «Жалоба»"""
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text(COMPLAINT_TEXT, parse_mode="Markdown", disable_web_page_preview=True)
+
+async def show_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
+    """Показывает QR-код для скачивания файла"""
+    query = update.callback_query
+    info = get_file_info(key)
+    if not info:
+        await query.answer("❌ Файл не найден", show_alert=True)
+        return
+    
+    deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
+    
+    try:
+        qr_img = await generate_qr_code(deep_link)
+        await query.message.reply_photo(
+            photo=qr_img,
+            caption=f"🔲 *QR-код для файла:* {info['filename']}\n\n"
+                    f"🔗 Ссылка: {deep_link}\n\n"
+                    f"Отсканируйте QR-код, чтобы скачать файл.",
+            parse_mode="Markdown"
+        )
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка генерации QR-кода: {e}")
+        await query.answer("❌ Ошибка генерации QR-кода", show_alert=True)
 
 async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id=0, files_page=0):
     query = update.callback_query
@@ -550,6 +632,7 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📥 Скачать", url=deep_link)],
         [InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")],
+        [InlineKeyboardButton("🔲 QR-код", callback_data=f"qr_{key}")],
         [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")]
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
@@ -679,6 +762,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "main_menu":
         await query.message.edit_text("👋 Главное меню\n\nИспользуйте кнопки ниже:", reply_markup=main_keyboard())
         await query.answer()
+    elif data == "about":
+        await about(update, context)
+    elif data == "complaint":
+        await complaint(update, context)
     elif data == "help":
         await query.message.edit_text(
             "📌 *Как пользоваться:*\n"
@@ -686,7 +773,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "2. При желании установите пароль.\n"
             "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
             "4. Нажмите на файл – скачается.\n"
-            "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n\n"
+            "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n"
+            "6. У каждого файла есть кнопка «🔲 QR-код» для быстрого доступа.\n\n"
             "Команды: /get <ключ>, /delete <ключ>",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
@@ -766,6 +854,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     elif data == "final_no_pwd":
         await final_save_file_from_callback(update, context, password=None)
+    elif data.startswith("qr_"):
+        key = data[3:]
+        await show_qr(update, context, key)
     elif data.startswith("unlock_"):
         key = data[7:]
         await unlock_file(update, context, key)
@@ -923,7 +1014,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия с удалением папок)")
+    logger.info("Бот запущен (с кнопками О проекте, Жалоба, QR-код)")
     app.run_polling()
 
 if __name__ == "__main__":
