@@ -459,41 +459,40 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
 
-async def create_new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page, with_password):
+async def create_new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
     query = update.callback_query
     context.user_data['new_folder_parent'] = parent_id
     context.user_data['new_folder_files_page'] = files_page
-    context.user_data['new_folder_with_password'] = with_password
-    
-    if with_password:
-        context.user_data['waiting_for_folder_password'] = True
-        await query.message.reply_text("Введите пароль для папки:")
-        await query.answer()
-    else:
-        await query.message.reply_text("Введите название папки:")
-        await query.answer()
+    await query.message.reply_text("Введите название папки:")
+    await query.answer()
+
+async def create_new_folder_with_password(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
+    query = update.callback_query
+    context.user_data['new_folder_parent'] = parent_id
+    context.user_data['new_folder_files_page'] = files_page
+    context.user_data['new_folder_with_password'] = True
+    await query.message.reply_text("Введите пароль для папки:")
+    await query.answer()
 
 async def handle_folder_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
-    if context.user_data.get('waiting_for_folder_password'):
+    if context.user_data.get('new_folder_with_password') and context.user_data.get('new_folder_password') is None:
         context.user_data['new_folder_password'] = text
-        context.user_data['waiting_for_folder_password'] = False
         await update.message.reply_text("Введите название папки:")
         return
     
-    if context.user_data.get('new_folder_parent') is not None:
-        parent_id = context.user_data.pop('new_folder_parent')
-        files_page = context.user_data.pop('new_folder_files_page')
-        with_password = context.user_data.pop('new_folder_with_password', False)
-        password = context.user_data.pop('new_folder_password', None)
-        
-        user_id = update.effective_user.id
-        password_hash = hash_password(password) if with_password and password else None
-        create_folder(user_id, text, parent_id, password_hash)
-        
-        await update.message.reply_text(f"✅ Папка «{text}» создана!")
-        await my_files(update, context, parent_id, files_page)
+    parent_id = context.user_data.pop('new_folder_parent', 0)
+    files_page = context.user_data.pop('new_folder_files_page', 0)
+    with_password = context.user_data.pop('new_folder_with_password', False)
+    password = context.user_data.pop('new_folder_password', None)
+    
+    user_id = update.effective_user.id
+    password_hash = hash_password(password) if with_password and password else None
+    create_folder(user_id, text, parent_id, password_hash)
+    
+    await update.message.reply_text(f"✅ Папка «{text}» создана!")
+    await my_files(update, context, parent_id, files_page)
 
 # --- Обработчики кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -560,23 +559,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parent_id = int(parts[2])
             files_page = int(parts[3])
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔒 Да", callback_data=f"new_folder_yes_{parent_id}_{files_page}")],
-                [InlineKeyboardButton("📁 Нет", callback_data=f"new_folder_no_{parent_id}_{files_page}")]
+                [InlineKeyboardButton("🔒 Да, с паролем", callback_data=f"new_folder_pwd_{parent_id}_{files_page}")],
+                [InlineKeyboardButton("📁 Нет, без пароля", callback_data=f"new_folder_no_{parent_id}_{files_page}")]
             ])
             await query.message.reply_text("Установить пароль на папку?", reply_markup=keyboard)
             await query.answer()
         except:
             await query.answer("Ошибка", show_alert=True)
-    elif data.startswith("new_folder_yes_"):
+    elif data.startswith("new_folder_pwd_"):
         parts = data.split("_")
         parent_id = int(parts[3])
         files_page = int(parts[4])
-        await create_new_folder(update, context, parent_id, files_page, True)
+        await create_new_folder_with_password(update, context, parent_id, files_page)
     elif data.startswith("new_folder_no_"):
         parts = data.split("_")
         parent_id = int(parts[3])
         files_page = int(parts[4])
-        await create_new_folder(update, context, parent_id, files_page, False)
+        await create_new_folder(update, context, parent_id, files_page)
     elif data == "file_with_pwd":
         context.user_data['temp_file_with_pwd'] = True
         await query.message.reply_text("Введите пароль для файла:")
@@ -609,9 +608,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text.strip()
     
-    # Обработка ввода пароля для папки
-    if context.user_data.get('waiting_for_folder_password'):
-        await handle_folder_creation(update, context)
+    # Обработка создания папки с паролем (сначала пароль, потом название)
+    if context.user_data.get('new_folder_with_password') and context.user_data.get('new_folder_password') is None:
+        context.user_data['new_folder_password'] = text
+        await update.message.reply_text("Введите название папки:")
         return
     
     # Обработка создания папки (название)
@@ -648,7 +648,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Файл с ключом `{text}` удалён.")
         return
     
-    # Обработка пароля для файла
+    # Обработка пароля для файла (из ссылки или /get)
     if context.user_data.get('pending_file_key'):
         key = context.user_data.pop('pending_file_key')
         info = get_file_info(key)
