@@ -119,18 +119,6 @@ def get_expired_files():
     conn.close()
     return rows
 
-def delete_expired_file(key, message_id, chat_id):
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute('DELETE FROM files WHERE key = ?', (key,))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка удаления {key}: {e}")
-        return False
-
 def create_folder(user_id, name, parent_id=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -288,7 +276,7 @@ async def check_expired_files(app):
                 for key, message_id, chat_id, filename in expired:
                     try:
                         await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                        delete_expired_file(key, message_id, chat_id)
+                        delete_file_info(key)
                         logger.info(f"Автоудаление: {filename} (ключ {key}) удалён")
                     except Exception as e:
                         logger.error(f"Не удалось удалить {filename}: {e}")
@@ -422,17 +410,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=storage_keyboard()
     )
 
-async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period, is_callback=True):
-    if is_callback:
-        query = update.callback_query
-        message = query.message
-    else:
-        query = None
-        message = update.message
+async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period):
+    query = update.callback_query
+    await query.answer()
     
     temp = context.user_data.get('temp_file')
     if not temp:
-        await message.reply_text("❌ Ошибка: файл не найден. Попробуйте загрузить заново.")
+        await query.message.reply_text("❌ Ошибка: файл не найден. Попробуйте загрузить заново.")
         return
     
     file_id = temp['file_id']
@@ -472,21 +456,15 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("🔒 Да, установить пароль", callback_data="final_with_pwd")],
         [InlineKeyboardButton("📁 Нет, без пароля", callback_data="final_no_pwd")]
     ])
-    await message.reply_text(f"Срок хранения: {period_text}\n\nУстановить пароль на файл?", reply_markup=keyboard)
-    if query:
-        await query.answer()
+    await query.message.edit_text(f"Срок хранения: {period_text}\n\nУстановить пароль на файл?", reply_markup=keyboard)
 
-async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None, is_callback=True):
-    if is_callback:
-        query = update.callback_query
-        message = query.message
-    else:
-        query = None
-        message = update.message
+async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
+    query = update.callback_query
+    await query.answer()
     
     temp = context.user_data.get('temp_file_data')
     if not temp:
-        await message.reply_text("❌ Ошибка: данные файла не найдены.")
+        await query.message.reply_text("❌ Ошибка: данные файла не найдены.")
         return
     
     file_id = temp['file_id']
@@ -527,7 +505,7 @@ async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         if password:
             result_text += f"🔒 Пароль: `{password}` (запомните его!)\n"
         
-        await message.reply_text(
+        await query.message.edit_text(
             result_text,
             parse_mode="Markdown",
             reply_markup=file_actions_keyboard(key, has_password=bool(password))
@@ -535,13 +513,9 @@ async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         
         del context.user_data['temp_file']
         del context.user_data['temp_file_data']
-        if query:
-            await query.answer()
     except Exception as e:
         logger.error(f"Ошибка при сохранении: {e}")
-        await message.reply_text("❌ Ошибка при сохранении файла.")
-        if query:
-            await query.answer()
+        await query.message.edit_text("❌ Ошибка при сохранении файла.")
 
 async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
     query = update.callback_query
@@ -575,7 +549,7 @@ async def process_folder_creation(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(f"✅ Папка «{text}» создана!")
     await my_files(update, context, parent_id, files_page)
 
-# --- Админ-команда удаления файла по ключу ---
+# --- Админ-команда ---
 async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -684,7 +658,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             period = data.split("_")[1]
             if context.user_data.get('temp_file'):
-                await save_file_with_options(update, context, period, is_callback=True)
+                await save_file_with_options(update, context, period)
             else:
                 await query.answer("❌ Ошибка: файл не найден. Попробуйте заново.", show_alert=True)
         except:
@@ -698,8 +672,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Введите пароль для файла:")
         await query.answer()
     elif data == "final_no_pwd":
-        context.user_data['temp_file_needs_pwd'] = False
-        await final_save_file(update, context, password=None, is_callback=True)
+        await final_save_file(update, context, password=None)
     elif data.startswith("unlock_"):
         key = data[7:]
         await unlock_file(update, context, key)
@@ -769,7 +742,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('temp_file_needs_pwd') is True and context.user_data.get('temp_file_data') is not None:
         password = text
         context.user_data['temp_file_needs_pwd'] = False
-        await final_save_file(update, context, password, is_callback=False)
+        await final_save_file(update, context, password)
         return
     
     await update.message.reply_text("❓ Используйте кнопки меню")
@@ -857,7 +830,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия с выбором срока хранения)")
+    logger.info("Бот запущен (полная версия)")
     app.run_polling()
 
 if __name__ == "__main__":
