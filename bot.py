@@ -459,7 +459,8 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
     ])
     await query.message.edit_text(f"Срок хранения: {period_text}\n\nУстановить пароль на файл?", reply_markup=keyboard)
 
-async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
+async def final_save_file_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
+    """Сохранение файла при нажатии кнопки (есть callback_query)"""
     query = update.callback_query
     await query.answer()
     
@@ -468,6 +469,20 @@ async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         await query.message.reply_text("❌ Ошибка: данные файла не найдены.")
         return
     
+    await _save_file(query.message, context, temp, password)
+
+async def final_save_file_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
+    """Сохранение файла при вводе пароля текстом (нет callback_query)"""
+    message = update.message
+    temp = context.user_data.get('temp_file_data')
+    if not temp:
+        await message.reply_text("❌ Ошибка: данные файла не найдены.")
+        return
+    
+    await _save_file(message, context, temp, password)
+
+async def _save_file(message, context, temp, password=None):
+    """Общая функция сохранения файла"""
     file_id = temp['file_id']
     filename = temp['filename']
     media_type = temp['media_type']
@@ -506,7 +521,7 @@ async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         if password:
             result_text += f"🔒 Пароль: `{password}` (запомните его!)\n"
         
-        await query.message.edit_text(
+        await message.reply_text(
             result_text,
             parse_mode="Markdown",
             reply_markup=file_actions_keyboard(key, has_password=bool(password))
@@ -521,7 +536,7 @@ async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         logger.error(f"Ошибка при сохранении: {e}")
         import traceback
         traceback.print_exc()
-        await query.message.edit_text("❌ Ошибка при сохранении файла. Попробуйте ещё раз.")
+        await message.reply_text("❌ Ошибка при сохранении файла. Попробуйте ещё раз.")
 
 async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
     query = update.callback_query
@@ -678,7 +693,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Введите пароль для файла:")
         await query.answer()
     elif data == "final_no_pwd":
-        await final_save_file(update, context, password=None)
+        await final_save_file_from_callback(update, context, password=None)
     elif data.startswith("unlock_"):
         key = data[7:]
         await unlock_file(update, context, key)
@@ -748,7 +763,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('temp_file_needs_pwd') is True and context.user_data.get('temp_file_data') is not None:
         password = text
         context.user_data['temp_file_needs_pwd'] = False
-        await final_save_file(update, context, password)
+        await final_save_file_from_text(update, context, password)
         return
     
     await update.message.reply_text("❓ Используйте кнопки меню")
