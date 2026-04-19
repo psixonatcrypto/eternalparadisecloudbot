@@ -82,7 +82,7 @@ def check_password(password, password_hash):
 def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None, expires_at=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at))
     conn.commit()
     conn.close()
