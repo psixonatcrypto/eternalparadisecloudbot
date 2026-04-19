@@ -26,7 +26,7 @@ if not BOT_TOKEN or not CHANNEL_ID:
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Веб-сервер для бодрствования ---
+# --- Веб-сервер ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -38,7 +38,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Инициализация БД (с полями для паролей) ---
+# --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -71,26 +71,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- Функции для работы с паролями (хэширование) ---
+# --- Функции для паролей ---
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def check_password(password, password_hash):
     return hash_password(password) == password_hash
-
-def set_file_password(key, password):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('UPDATE files SET password_hash = ? WHERE key = ?', (hash_password(password), key))
-    conn.commit()
-    conn.close()
-
-def remove_file_password(key):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('UPDATE files SET password_hash = NULL WHERE key = ?', (key,))
-    conn.commit()
-    conn.close()
 
 def get_file_password_hash(key):
     conn = sqlite3.connect(DB_NAME)
@@ -100,20 +86,6 @@ def get_file_password_hash(key):
     conn.close()
     return row[0] if row else None
 
-def set_folder_password(folder_id, password):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('UPDATE folders SET password_hash = ? WHERE id = ?', (hash_password(password), folder_id))
-    conn.commit()
-    conn.close()
-
-def remove_folder_password(folder_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('UPDATE folders SET password_hash = NULL WHERE id = ?', (folder_id,))
-    conn.commit()
-    conn.close()
-
 def get_folder_password_hash(folder_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -122,7 +94,7 @@ def get_folder_password_hash(folder_id):
     conn.close()
     return row[0] if row else None
 
-# --- Функции для работы с БД (файлы, папки, пользователи) ---
+# --- Функции БД ---
 def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -185,13 +157,6 @@ def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
     conn.close()
     return rows, total
 
-def move_file_to_folder(file_key, folder_id, user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('UPDATE files SET folder_id = ? WHERE key = ? AND user_id = ?', (folder_id, file_key, user_id))
-    conn.commit()
-    conn.close()
-
 def save_user(user_id, first_name, username):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -247,7 +212,7 @@ def file_actions_keyboard(key):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def folder_keyboard(user_id, parent_id=0, page=0, files_page=0):
+def folder_keyboard(user_id, parent_id=0, files_page=0):
     folders = get_user_folders(user_id, parent_id)
     files, total_files = get_user_files_in_folder(user_id, parent_id, limit=10, offset=files_page * 10)
     
@@ -257,7 +222,7 @@ def folder_keyboard(user_id, parent_id=0, page=0, files_page=0):
             display_name = f"🔒 {folder_name}"
         else:
             display_name = f"📁 {folder_name}"
-        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_folder_{folder_id}_{parent_id}_{page}_{files_page}")])
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_folder_{folder_id}_{files_page}")])
     
     for key, filename, created_at in files:
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
@@ -265,14 +230,14 @@ def folder_keyboard(user_id, parent_id=0, page=0, files_page=0):
     
     nav_buttons = []
     if files_page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Файлы назад", callback_data=f"files_page_{parent_id}_{page}_{files_page-1}"))
+        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"files_page_{parent_id}_{files_page-1}"))
     if (files_page + 1) * 10 < total_files:
-        nav_buttons.append(InlineKeyboardButton("Файлы вперёд ▶️", callback_data=f"files_page_{parent_id}_{page}_{files_page+1}"))
+        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"files_page_{parent_id}_{files_page+1}"))
     if nav_buttons:
         keyboard.append(nav_buttons)
     
     action_buttons = []
-    action_buttons.append(InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{page}_{files_page}"))
+    action_buttons.append(InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}"))
     action_buttons.append(InlineKeyboardButton("📤 Добавить файл", callback_data="upload"))
     keyboard.append(action_buttons)
     
@@ -301,7 +266,7 @@ async def send_file_by_info(chat_id, info, key, bot):
     else:
         await bot.send_document(chat_id=chat_id, document=info["file_id"], filename=info["filename"])
 
-# --- Обработчики команд ---
+# --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -344,7 +309,7 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id=0):
+async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id=0, files_page=0):
     query = update.callback_query
     user_id = update.effective_user.id
     
@@ -352,7 +317,7 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
         pwd_hash = get_folder_password_hash(parent_id)
         if pwd_hash:
             context.user_data['pending_folder_id'] = parent_id
-            context.user_data['pending_folder_action'] = 'open'
+            context.user_data['pending_folder_files_page'] = files_page
             if query:
                 await query.message.reply_text("🔒 Папка защищена паролем. Введите пароль:")
                 await query.answer()
@@ -362,15 +327,14 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
     
     text = "📁 *Ваши файлы и папки:*"
     if query:
-        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id))
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id, files_page))
         await query.answer()
     else:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id))
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id, files_page))
 
-async def new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, page, files_page):
+async def new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
     query = update.callback_query
     context.user_data['new_folder_parent'] = parent_id
-    context.user_data['new_folder_page'] = page
     context.user_data['new_folder_files_page'] = files_page
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔒 Да, установить пароль", callback_data="new_folder_with_pwd")],
@@ -384,7 +348,6 @@ async def handle_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     folder_name = update.message.text
     parent_id = context.user_data.get('new_folder_parent', 0)
-    page = context.user_data.get('new_folder_page', 0)
     files_page = context.user_data.get('new_folder_files_page', 0)
     with_password = context.user_data.get('new_folder_with_password', False)
     password = context.user_data.get('new_folder_password', None)
@@ -394,8 +357,7 @@ async def handle_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     create_folder(user_id, folder_name, parent_id, password_hash)
     
     await update.message.reply_text(f"✅ Папка «{folder_name}» создана!")
-    text = "📁 *Ваши файлы и папки:*"
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=folder_keyboard(user_id, parent_id, page, files_page))
+    await my_files(update, context, parent_id, files_page)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -556,20 +518,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.answer()
     elif data == "my_files_root":
-        await my_files(update, context, 0)
+        await my_files(update, context, 0, 0)
     elif data.startswith("my_files_"):
-        parent_id = int(data.split("_")[2])
-        await my_files(update, context, parent_id)
+        try:
+            parent_id = int(data.split("_")[2])
+            await my_files(update, context, parent_id, 0)
+        except (IndexError, ValueError):
+            await query.answer("Ошибка формата", show_alert=True)
     elif data.startswith("open_folder_"):
-        parts = data.split("_")
-        folder_id = int(parts[2])
-        await my_files(update, context, folder_id)
+        try:
+            parts = data.split("_")
+            folder_id = int(parts[2])
+            files_page = int(parts[3]) if len(parts) > 3 else 0
+            await my_files(update, context, folder_id, files_page)
+        except (IndexError, ValueError):
+            await query.answer("Ошибка формата", show_alert=True)
+    elif data.startswith("files_page_"):
+        try:
+            parts = data.split("_")
+            parent_id = int(parts[2])
+            files_page = int(parts[3]) if len(parts) > 3 else 0
+            user_id = update.effective_user.id
+            keyboard = folder_keyboard(user_id, parent_id, files_page)
+            await query.message.edit_reply_markup(reply_markup=keyboard)
+            await query.answer()
+        except (IndexError, ValueError):
+            await query.answer("Ошибка формата", show_alert=True)
     elif data.startswith("new_folder_"):
-        parts = data.split("_")
-        parent_id = int(parts[2])
-        page = int(parts[3])
-        files_page = int(parts[4])
-        await new_folder(update, context, parent_id, page, files_page)
+        try:
+            parts = data.split("_")
+            parent_id = int(parts[2])
+            files_page = int(parts[3]) if len(parts) > 3 else 0
+            await new_folder(update, context, parent_id, files_page)
+        except (IndexError, ValueError):
+            await query.answer("Ошибка формата", show_alert=True)
     elif data == "new_folder_with_pwd":
         context.user_data['new_folder_with_password'] = True
         await query.message.reply_text("Введите пароль для папки:")
@@ -649,13 +631,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if context.user_data.get('pending_folder_id'):
         folder_id = context.user_data.pop('pending_folder_id')
-        action = context.user_data.pop('pending_folder_action', 'open')
+        files_page = context.user_data.pop('pending_folder_files_page', 0)
         pwd_hash = get_folder_password_hash(folder_id)
         if pwd_hash and check_password(text, pwd_hash):
-            if action == 'open':
-                await my_files(update, context, folder_id)
-            else:
-                pass
+            await my_files(update, context, folder_id, files_page)
         else:
             await update.message.reply_text("❌ Неверный пароль. Доступ к папке запрещён.")
         return
@@ -754,7 +733,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (с паролями на файлы/папки и автовводом ключа)")
+    logger.info("Бот запущен (исправленная версия с папками и паролями)")
     app.run_polling()
 
 if __name__ == "__main__":
