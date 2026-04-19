@@ -289,6 +289,7 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
     query = update.callback_query
     user_id = update.effective_user.id
     
+    # Проверка пароля на папку
     if parent_id != 0:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
@@ -296,6 +297,7 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
         row = c.fetchone()
         conn.close()
         if row and row[0]:
+            # Запрашиваем пароль
             context.user_data['pending_folder_id'] = parent_id
             context.user_data['pending_folder_files_page'] = files_page
             if query:
@@ -305,6 +307,7 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
                 await update.message.reply_text("🔒 Папка защищена паролем. Введите пароль:")
             return
     
+    # Показываем содержимое папки
     text = "📁 *Ваши файлы и папки:*"
     keyboard = folder_keyboard(user_id, parent_id, files_page)
     if query:
@@ -458,7 +461,7 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
 
-# --- Создание папок (исправленная версия) ---
+# --- Создание папок ---
 async def new_folder_start(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
     query = update.callback_query
     context.user_data['new_folder_parent'] = parent_id
@@ -612,7 +615,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_folder_creation(update, context)
         return
     
-    # Обработка пароля для файла
+    # Обработка пароля для файла (из ссылки)
     if context.user_data.get('pending_file_key'):
         key = context.user_data.pop('pending_file_key')
         info = get_file_info(key)
@@ -632,10 +635,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute('SELECT password_hash FROM folders WHERE id = ?', (folder_id,))
         row = c.fetchone()
         conn.close()
-        if row and row[0] and check_password(text, row[0]):
-            await my_files(update, context, folder_id, files_page)
+        if row and row[0]:
+            if check_password(text, row[0]):
+                await my_files(update, context, folder_id, files_page)
+            else:
+                await update.message.reply_text("❌ Неверный пароль. Доступ к папке запрещён.")
         else:
-            await update.message.reply_text("❌ Неверный пароль. Доступ к папке запрещён.")
+            await my_files(update, context, folder_id, files_page)
         return
     
     # Обработка /get по ключу
@@ -752,7 +758,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия с исправленными папками)")
+    logger.info("Бот запущен")
     app.run_polling()
 
 if __name__ == "__main__":
