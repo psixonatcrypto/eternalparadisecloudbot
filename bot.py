@@ -5,6 +5,7 @@ import sqlite3
 import asyncio
 import threading
 import hashlib
+import datetime
 from uuid import uuid4
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -37,7 +38,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Инициализация БД ---
+# --- Инициализация БД (добавлено поле expires_at) ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -51,6 +52,7 @@ def init_db():
         user_id INTEGER,
         folder_id INTEGER DEFAULT 0,
         password_hash TEXT,
+        expires_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS folders (
@@ -68,6 +70,7 @@ def init_db():
     )''')
     conn.commit()
     conn.close()
+    logger.info("База данных инициализирована")
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -76,22 +79,22 @@ def check_password(password, password_hash):
     return hash_password(password) == password_hash
 
 # --- Функции БД ---
-def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None):
+def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None, expires_at=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash))
+    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at))
     conn.commit()
     conn.close()
 
 def get_file_info(key):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT file_id, filename, media_type, message_id, password_hash FROM files WHERE key = ?', (key,))
+    c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at FROM files WHERE key = ?', (key,))
     row = c.fetchone()
     conn.close()
     if row:
-        return {"file_id": row[0], "filename": row[1], "media_type": row[2], "message_id": row[3], "password_hash": row[4]}
+        return {"file_id": row[0], "filename": row[1], "media_type": row[2], "message_id": row[3], "password_hash": row[4], "expires_at": row[5]}
     return None
 
 def delete_file_info(key):
@@ -107,6 +110,26 @@ def remove_file_password(key):
     c.execute('UPDATE files SET password_hash = NULL WHERE key = ?', (key,))
     conn.commit()
     conn.close()
+
+def get_expired_files():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT key, message_id, chat_id, filename FROM files WHERE expires_at IS NOT NULL AND expires_at <= datetime("now")')
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def delete_expired_file(key, message_id, chat_id):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('DELETE FROM files WHERE key = ?', (key,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка удаления {key}: {e}")
+        return False
 
 def create_folder(user_id, name, parent_id=0):
     conn = sqlite3.connect(DB_NAME)
@@ -128,7 +151,7 @@ def get_user_folders(user_id, parent_id=0):
 def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT key, filename, created_at FROM files WHERE user_id = ? AND folder_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    c.execute('SELECT key, filename, created_at, expires_at FROM files WHERE user_id = ? AND folder_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
               (user_id, folder_id, limit, offset))
     rows = c.fetchall()
     c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND folder_id = ?', (user_id, folder_id))
@@ -200,9 +223,15 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     for folder_id, folder_name in folders:
         keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"open_folder_{folder_id}_{files_page}")])
     
-    for key, filename, created_at in files:
+    for key, filename, created_at, expires_at in files:
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
-        keyboard.append([InlineKeyboardButton(f"📄 {filename[:30]}", url=deep_link)])
+        # Показываем срок хранения
+        if expires_at:
+            expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+            display_name = f"📄 {filename[:20]} (до {expires_str})"
+        else:
+            display_name = f"📄 {filename[:30]}"
+        keyboard.append([InlineKeyboardButton(display_name, url=deep_link)])
     
     nav_buttons = []
     if files_page > 0:
@@ -212,7 +241,7 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     if nav_buttons:
         keyboard.append(nav_buttons)
     
-    # Кнопка "Новая папка" ТОЛЬКО в корне (parent_id == 0)
+    # Кнопка "Новая папка" ТОЛЬКО в корне
     if parent_id == 0:
         keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}")])
     
@@ -223,6 +252,17 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     else:
         keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
     
+    return InlineKeyboardMarkup(keyboard)
+
+def storage_keyboard(file_id, filename):
+    keyboard = [
+        [InlineKeyboardButton("⏰ 1 час", callback_data=f"period_1h_{file_id}")],
+        [InlineKeyboardButton("📅 1 день", callback_data=f"period_1d_{file_id}")],
+        [InlineKeyboardButton("📆 1 неделя", callback_data=f"period_1w_{file_id}")],
+        [InlineKeyboardButton("🗓 1 месяц", callback_data=f"period_1m_{file_id}")],
+        [InlineKeyboardButton("♾ Навсегда", callback_data=f"period_forever_{file_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_upload")]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 async def send_file_by_info(chat_id, info, key, bot):
@@ -236,6 +276,25 @@ async def send_file_by_info(chat_id, info, key, bot):
         await bot.send_voice(chat_id=chat_id, voice=info["file_id"], caption=f"🎙️ Ваше голосовое")
     else:
         await bot.send_document(chat_id=chat_id, document=info["file_id"], filename=info["filename"])
+
+# --- Автоматическое удаление просроченных файлов ---
+async def check_expired_files(app):
+    """Фоновая задача: проверяет и удаляет просроченные файлы раз в час"""
+    while True:
+        try:
+            expired = get_expired_files()
+            if expired:
+                logger.info(f"Найдено {len(expired)} просроченных файлов")
+                for key, message_id, chat_id, filename in expired:
+                    try:
+                        await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                        delete_expired_file(key, message_id, chat_id)
+                        logger.info(f"Автоудаление: {filename} (ключ {key}) удалён")
+                    except Exception as e:
+                        logger.error(f"Не удалось удалить {filename}: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка при проверке просроченных файлов: {e}")
+        await asyncio.sleep(3600)  # 1 час
 
 # --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -272,10 +331,10 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "📌 *Как пользоваться:*\n"
-        "1. Отправьте файл – можно установить пароль.\n"
-        "2. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-        "3. Нажмите на файл – скачается.\n"
-        "4. У файла есть кнопки: «Снять пароль», «Ключ», «Удалить».\n\n"
+        "1. Отправьте файл – выберите срок хранения.\n"
+        "2. При желании установите пароль.\n"
+        "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
+        "4. Нажмите на файл – скачается.\n\n"
         "Команды: /get <ключ>, /delete <ключ>\n\n"
         "Если обнаружили баг: @Eternal_paradise_supbot",
         parse_mode="Markdown"
@@ -349,6 +408,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неподдерживаемый тип файла.")
         return
 
+    # Сохраняем временные данные
     context.user_data['temp_file'] = {
         'file_id': file_id,
         'filename': filename,
@@ -356,13 +416,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'user_id': user.id,
         'user_first_name': user.first_name
     }
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔒 Да, установить пароль", callback_data="file_with_pwd")],
-        [InlineKeyboardButton("📁 Нет, без пароля", callback_data="file_no_pwd")]
-    ])
-    await update.message.reply_text("Установить пароль на этот файл?", reply_markup=keyboard)
+    # Спрашиваем срок хранения
+    await update.message.reply_text(
+        f"📁 Файл *{filename}*\n\nВыберите срок хранения:",
+        parse_mode="Markdown",
+        reply_markup=storage_keyboard(file_id, filename)
+    )
 
-async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None, is_callback=True):
+async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period, is_callback=True):
     if is_callback:
         query = update.callback_query
         message = query.message
@@ -381,42 +442,102 @@ async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_
     user_id = temp['user_id']
     user_first_name = temp['user_first_name']
     
+    # Рассчитываем дату истечения
+    expires_at = None
+    period_text = ""
+    if period == "1h":
+        expires_at = datetime.datetime.now() + datetime.timedelta(hours=1)
+        period_text = "1 час"
+    elif period == "1d":
+        expires_at = datetime.datetime.now() + datetime.timedelta(days=1)
+        period_text = "1 день"
+    elif period == "1w":
+        expires_at = datetime.datetime.now() + datetime.timedelta(weeks=1)
+        period_text = "1 неделя"
+    elif period == "1m":
+        expires_at = datetime.datetime.now() + datetime.timedelta(days=30)
+        period_text = "1 месяц"
+    elif period == "forever":
+        period_text = "навсегда"
+    
+    # Спрашиваем про пароль
+    context.user_data['temp_file_data'] = {
+        'file_id': file_id,
+        'filename': filename,
+        'media_type': media_type,
+        'user_id': user_id,
+        'user_first_name': user_first_name,
+        'expires_at': expires_at.isoformat() if expires_at else None,
+        'period_text': period_text
+    }
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔒 Да, установить пароль", callback_data="final_with_pwd")],
+        [InlineKeyboardButton("📁 Нет, без пароля", callback_data="final_no_pwd")]
+    ])
+    await message.reply_text(f"Срок хранения: {period_text}\n\nУстановить пароль на файл?", reply_markup=keyboard)
+    if query:
+        await query.answer()
+
+async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None, is_callback=True):
+    if is_callback:
+        query = update.callback_query
+        message = query.message
+    else:
+        query = None
+        message = update.message
+    
+    temp = context.user_data.get('temp_file_data')
+    if not temp:
+        await message.reply_text("❌ Ошибка: данные файла не найдены.")
+        return
+    
+    file_id = temp['file_id']
+    filename = temp['filename']
+    media_type = temp['media_type']
+    user_id = temp['user_id']
+    user_first_name = temp['user_first_name']
+    expires_at = temp['expires_at']
+    period_text = temp['period_text']
+    
     password_hash = hash_password(password) if password else None
     
     try:
         key = str(uuid4())[:8]
+        caption = f"📁 Файл от {user_first_name} | Ключ: {key}"
+        if expires_at:
+            expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
+            caption += f"\n⏰ Удалить: {expires_str}"
+        
         if media_type == "photo":
-            sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=f"📸 Фото от {user_first_name} | Ключ: {key}")
+            sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption)
         elif media_type == "video":
-            sent = await context.bot.send_video(chat_id=CHANNEL_ID, video=file_id, caption=f"🎬 Видео от {user_first_name} | Ключ: {key}")
+            sent = await context.bot.send_video(chat_id=CHANNEL_ID, video=file_id, caption=caption)
         elif media_type == "audio":
-            sent = await context.bot.send_audio(chat_id=CHANNEL_ID, audio=file_id, caption=f"🎵 Аудио от {user_first_name} | Ключ: {key}")
+            sent = await context.bot.send_audio(chat_id=CHANNEL_ID, audio=file_id, caption=caption)
         elif media_type == "voice":
-            sent = await context.bot.send_voice(chat_id=CHANNEL_ID, voice=file_id, caption=f"🎙️ Голосовое от {user_first_name} | Ключ: {key}")
+            sent = await context.bot.send_voice(chat_id=CHANNEL_ID, voice=file_id, caption=caption)
         else:
-            sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=f"📁 Файл от {user_first_name} | Ключ: {key}")
+            sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
 
-        save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id=0, password_hash=password_hash)
+        save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id=0, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         
+        result_text = f"✅ Файл *{filename}* сохранён!\n\n"
+        result_text += f"🔗 *Ссылка:* {deep_link}\n"
+        result_text += f"📌 Ключ: `{key}`\n"
+        result_text += f"⏰ Срок хранения: {period_text}\n"
         if password:
-            await message.reply_text(
-                f"✅ Файл *{filename}* сохранён с паролем!\n\n"
-                f"🔗 *Ссылка:* {deep_link}\n"
-                f"📌 Ключ: `{key}`\n"
-                f"🔒 Пароль: `{password}` (запомните его!)",
-                parse_mode="Markdown",
-                reply_markup=file_actions_keyboard(key, has_password=True)
-            )
-        else:
-            await message.reply_text(
-                f"✅ Файл *{filename}* сохранён!\n\n"
-                f"🔗 *Ссылка:* {deep_link}\n"
-                f"📌 Ключ: `{key}`",
-                parse_mode="Markdown",
-                reply_markup=file_actions_keyboard(key, has_password=False)
-            )
+            result_text += f"🔒 Пароль: `{password}` (запомните его!)\n"
+        
+        await message.reply_text(
+            result_text,
+            parse_mode="Markdown",
+            reply_markup=file_actions_keyboard(key, has_password=bool(password))
+        )
+        
         del context.user_data['temp_file']
+        del context.user_data['temp_file_data']
         if query:
             await query.answer()
     except Exception as e:
@@ -438,7 +559,7 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
 
-# --- Создание папок (без паролей) ---
+# --- Создание папок ---
 async def new_folder_start(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
     query = update.callback_query
     context.user_data['new_folder_parent'] = parent_id
@@ -475,7 +596,6 @@ async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ключ `{key}` не найден.")
         return
     
-    # Удаляем из канала
     try:
         await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
         await update.message.reply_text(f"✅ Файл с ключом `{key}` удалён из канала.")
@@ -483,7 +603,6 @@ async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Не удалось удалить из канала: {e}")
         await update.message.reply_text(f"⚠ Не удалось удалить файл из канала.")
     
-    # Удаляем из БД
     delete_file_info(key)
     await update.message.reply_text(f"✅ Запись с ключом `{key}` удалена из базы данных.")
 
@@ -508,10 +627,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "help":
         await query.message.edit_text(
             "📌 *Как пользоваться:*\n"
-            "1. Отправьте файл – можно установить пароль.\n"
-            "2. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-            "3. Нажмите на файл – скачается.\n"
-            "4. У файла есть кнопки: «Снять пароль», «Ключ», «Удалить».\n\n"
+            "1. Отправьте файл – выберите срок хранения.\n"
+            "2. При желании установите пароль.\n"
+            "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
+            "4. Нажмите на файл – скачается.\n\n"
             "Команды: /get <ключ>, /delete <ключ>",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
@@ -564,13 +683,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await new_folder_start(update, context, parent_id, files_page)
         except:
             await query.answer("Ошибка", show_alert=True)
-    elif data == "file_with_pwd":
-        context.user_data['temp_file_with_pwd'] = True
+    elif data.startswith("period_"):
+        try:
+            parts = data.split("_")
+            period = parts[1]  # 1h, 1d, 1w, 1m, forever
+            await save_file_with_options(update, context, period, is_callback=True)
+        except:
+            await query.answer("Ошибка", show_alert=True)
+    elif data == "cancel_upload":
+        context.user_data.pop('temp_file', None)
+        await query.message.edit_text("❌ Загрузка отменена.")
+        await query.answer()
+    elif data == "final_with_pwd":
+        context.user_data['temp_file_needs_pwd'] = True
         await query.message.reply_text("Введите пароль для файла:")
         await query.answer()
-    elif data == "file_no_pwd":
-        context.user_data['temp_file_with_pwd'] = False
-        await save_file_with_password(update, context, password=None, is_callback=True)
+    elif data == "final_no_pwd":
+        context.user_data['temp_file_needs_pwd'] = False
+        await final_save_file(update, context, password=None, is_callback=True)
     elif data.startswith("unlock_"):
         key = data[7:]
         await unlock_file(update, context, key)
@@ -621,7 +751,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if info.get("password_hash"):
             context.user_data['pending_file_key'] = text
-            await update.message.reply_text("🔒 Файл защищ favored паролем. Введите пароль:")
+            await update.message.reply_text("🔒 Файл защищён паролем. Введите пароль:")
         else:
             await send_file_by_info(update.effective_chat.id, info, text, context.bot)
         return
@@ -641,11 +771,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Файл с ключом `{text}` удалён.")
         return
     
-    # Обработка пароля для файла при загрузке
-    if context.user_data.get('temp_file_with_pwd') is True and context.user_data.get('temp_file') is not None:
+    # Обработка пароля для финального сохранения файла
+    if context.user_data.get('temp_file_needs_pwd') is True and context.user_data.get('temp_file_data') is not None:
         password = text
-        context.user_data['temp_file_with_pwd'] = False
-        await save_file_with_password(update, context, password, is_callback=False)
+        context.user_data['temp_file_needs_pwd'] = False
+        await final_save_file(update, context, password, is_callback=False)
         return
     
     await update.message.reply_text("❓ Используйте кнопки меню")
@@ -714,6 +844,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Запускаем фоновую задачу для удаления просроченных файлов
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(check_expired_files(app))
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_text))
     app.add_handler(CommandHandler("get", get_command))
@@ -727,7 +863,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен")
+    logger.info("Бот запущен (с функцией срока хранения файлов)")
     app.run_polling()
 
 if __name__ == "__main__":
