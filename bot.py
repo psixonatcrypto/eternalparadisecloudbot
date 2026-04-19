@@ -86,7 +86,6 @@ def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user
               (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at))
     conn.commit()
     conn.close()
-    logger.info(f"Файл сохранён в БД: ключ={key}, имя={filename}")
 
 def get_file_info(key):
     conn = sqlite3.connect(DB_NAME)
@@ -234,6 +233,9 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     
     if parent_id == 0:
         keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}")])
+    else:
+        # Кнопка удаления папки (только если не в корне)
+        keyboard.append([InlineKeyboardButton("🗑 Удалить эту папку", callback_data=f"delete_folder_{parent_id}_{files_page}")])
     
     keyboard.append([InlineKeyboardButton("📤 Добавить файл", callback_data="upload")])
     
@@ -323,7 +325,8 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1. Отправьте файл – выберите срок хранения.\n"
         "2. При желании установите пароль.\n"
         "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-        "4. Нажмите на файл – скачается.\n\n"
+        "4. Нажмите на файл – скачается.\n"
+        "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n\n"
         "Команды: /get <ключ>, /delete <ключ>\n\n"
         "Если обнаружили баг: @Eternal_paradise_supbot",
         parse_mode="Markdown"
@@ -570,6 +573,66 @@ async def process_folder_creation(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(f"✅ Папка «{text}» создана!")
     await my_files(update, context, parent_id, files_page)
 
+# --- Удаление папки ---
+async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, folder_id, files_page):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    # Получаем информацию о папке
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT name, parent_id FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row:
+        await query.answer("❌ Папка не найдена", show_alert=True)
+        return
+    
+    folder_name, parent_id = row
+    
+    # Удаляем все файлы в папке
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Получаем все файлы в папке для удаления из канала
+    c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
+    files_in_folder = c.fetchall()
+    
+    # Удаляем файлы из канала
+    for key, message_id in files_in_folder:
+        try:
+            await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=message_id)
+            logger.info(f"Удалён файл {key} из канала")
+        except Exception as e:
+            logger.error(f"Не удалось удалить файл {key}: {e}")
+    
+    # Удаляем файлы из БД
+    c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
+    
+    # Удаляем все подпапки (рекурсивно)
+    c.execute('SELECT id FROM folders WHERE parent_id = ? AND user_id = ?', (folder_id, user_id))
+    subfolders = c.fetchall()
+    for sub_id, in subfolders:
+        # Удаляем файлы в подпапках
+        c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
+        sub_files = c.fetchall()
+        for key, message_id in sub_files:
+            try:
+                await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=message_id)
+            except:
+                pass
+        c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
+        c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (sub_id, user_id))
+    
+    # Удаляем саму папку
+    c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
+    conn.commit()
+    conn.close()
+    
+    await query.answer(f"✅ Папка «{folder_name}» и всё её содержимое удалены!", show_alert=True)
+    await my_files(update, context, parent_id, 0)
+
 # --- Админ-команда ---
 async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -622,7 +685,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1. Отправьте файл – выберите срок хранения.\n"
             "2. При желании установите пароль.\n"
             "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-            "4. Нажмите на файл – скачается.\n\n"
+            "4. Нажмите на файл – скачается.\n"
+            "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n\n"
             "Команды: /get <ключ>, /delete <ключ>",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
@@ -673,6 +737,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parent_id = int(parts[2])
             files_page = int(parts[3])
             await new_folder_start(update, context, parent_id, files_page)
+        except:
+            await query.answer("Ошибка", show_alert=True)
+    elif data.startswith("delete_folder_"):
+        try:
+            parts = data.split("_")
+            folder_id = int(parts[2])
+            files_page = int(parts[3]) if len(parts) > 3 else 0
+            await delete_folder(update, context, folder_id, files_page)
         except:
             await query.answer("Ошибка", show_alert=True)
     elif data.startswith("period_"):
@@ -851,7 +923,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия)")
+    logger.info("Бот запущен (полная версия с удалением папок)")
     app.run_polling()
 
 if __name__ == "__main__":
