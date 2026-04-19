@@ -129,15 +129,6 @@ def create_folder(user_id, name, parent_id=0, password_hash=None):
     conn.close()
     return folder_id
 
-def delete_folder(folder_id, user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
-    c.execute('DELETE FROM folders WHERE parent_id = ? AND user_id = ?', (folder_id, user_id))
-    c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
-    conn.commit()
-    conn.close()
-
 def get_user_folders(user_id, parent_id=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -207,6 +198,7 @@ def file_actions_keyboard(key):
     deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
     keyboard = [
         [InlineKeyboardButton("📥 Скачать", url=deep_link)],
+        [InlineKeyboardButton("🔐 Снять пароль", callback_data=f"unlock_{key}")],
         [InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")],
         [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")]
     ]
@@ -303,7 +295,8 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Как пользоваться:*\n"
         "1. Отправьте файл – можно установить пароль.\n"
         "2. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-        "3. Для получения файла по ссылке или команде введите пароль, если он установлен.\n\n"
+        "3. Нажмите на файл – скачается.\n"
+        "4. У файла есть кнопки: «Снять пароль», «Ключ», «Удалить».\n\n"
         "Команды: /get <ключ>, /delete <ключ>\n\n"
         "Если обнаружили баг: @Eternal_paradise_supbot",
         parse_mode="Markdown"
@@ -355,6 +348,12 @@ async def handle_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     password_hash = hash_password(password) if with_password and password else None
     create_folder(user_id, folder_name, parent_id, password_hash)
+    
+    # Очищаем временные данные
+    context.user_data.pop('new_folder_parent', None)
+    context.user_data.pop('new_folder_files_page', None)
+    context.user_data.pop('new_folder_with_password', None)
+    context.user_data.pop('new_folder_password', None)
     
     await update.message.reply_text(f"✅ Папка «{folder_name}» создана!")
     await my_files(update, context, parent_id, files_page)
@@ -485,6 +484,25 @@ async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_
         await query.message.edit_text("❌ Ошибка при сохранении файла.")
         await query.answer()
 
+# --- Снятие пароля с файла ---
+async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
+    query = update.callback_query
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE files SET password_hash = NULL WHERE key = ?', (key,))
+    conn.commit()
+    conn.close()
+    await query.answer("✅ Пароль с файла снят!", show_alert=True)
+    
+    # Обновляем сообщение с кнопками
+    deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
+    keyboard = [
+        [InlineKeyboardButton("📥 Скачать", url=deep_link)],
+        [InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")],
+        [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")]
+    ]
+    await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+
 # --- Обработчики кнопок и текста ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -510,7 +528,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📌 *Как пользоваться:*\n"
             "1. Отправьте файл – можно установить пароль.\n"
             "2. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-            "3. Для получения файла по ссылке или команде введите пароль, если он установлен.\n\n"
+            "3. Нажмите на файл – скачается.\n"
+            "4. У файла есть кнопки: «Снять пароль», «Ключ», «Удалить».\n\n"
             "Команды: /get <ключ>, /delete <ключ>\n\n"
             "Если обнаружили баг: @Eternal_paradise_supbot",
             parse_mode="Markdown",
@@ -554,6 +573,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Ошибка формата", show_alert=True)
     elif data == "new_folder_with_pwd":
         context.user_data['new_folder_with_password'] = True
+        context.user_data['new_folder_password'] = None
         await query.message.reply_text("Введите пароль для папки:")
         await query.answer()
     elif data == "new_folder_no_pwd":
@@ -568,6 +588,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "file_no_pwd":
         context.user_data['temp_file_with_pwd'] = False
         await save_file_with_password(update, context, password=None)
+    elif data.startswith("unlock_"):
+        key = data[7:]
+        await unlock_file(update, context, key)
     elif data.startswith("copy_"):
         key = data[5:]
         await query.answer(f"Ключ: {key}", show_alert=True)
@@ -733,7 +756,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (исправленная версия с папками и паролями)")
+    logger.info("Бот запущен (полная версия с паролями и управлением файлами)")
     app.run_polling()
 
 if __name__ == "__main__":
