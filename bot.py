@@ -70,14 +70,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- Функции для паролей ---
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def check_password(password, password_hash):
     return hash_password(password) == password_hash
 
-# --- Функции БД ---
 def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -459,36 +457,39 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
 
-async def create_new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
+# --- Новая простая логика создания папок ---
+async def create_folder_start(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
     query = update.callback_query
     context.user_data['new_folder_parent'] = parent_id
     context.user_data['new_folder_files_page'] = files_page
     await query.message.reply_text("Введите название папки:")
     await query.answer()
 
-async def create_new_folder_with_password(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
+async def create_folder_with_password_start(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
     query = update.callback_query
     context.user_data['new_folder_parent'] = parent_id
     context.user_data['new_folder_files_page'] = files_page
-    context.user_data['new_folder_with_password'] = True
+    context.user_data['new_folder_needs_password'] = True
     await query.message.reply_text("Введите пароль для папки:")
     await query.answer()
 
-async def handle_folder_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_folder_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     
-    if context.user_data.get('new_folder_with_password') and context.user_data.get('new_folder_password') is None:
+    # Если ожидаем пароль
+    if context.user_data.get('new_folder_needs_password') and context.user_data.get('new_folder_password') is None:
         context.user_data['new_folder_password'] = text
         await update.message.reply_text("Введите название папки:")
         return
     
+    # Создаём папку
     parent_id = context.user_data.pop('new_folder_parent', 0)
     files_page = context.user_data.pop('new_folder_files_page', 0)
-    with_password = context.user_data.pop('new_folder_with_password', False)
+    needs_password = context.user_data.pop('new_folder_needs_password', False)
     password = context.user_data.pop('new_folder_password', None)
     
     user_id = update.effective_user.id
-    password_hash = hash_password(password) if with_password and password else None
+    password_hash = hash_password(password) if needs_password and password else None
     create_folder(user_id, text, parent_id, password_hash)
     
     await update.message.reply_text(f"✅ Папка «{text}» создана!")
@@ -570,12 +571,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         parent_id = int(parts[3])
         files_page = int(parts[4])
-        await create_new_folder_with_password(update, context, parent_id, files_page)
+        await create_folder_with_password_start(update, context, parent_id, files_page)
     elif data.startswith("new_folder_no_"):
         parts = data.split("_")
         parent_id = int(parts[3])
         files_page = int(parts[4])
-        await create_new_folder(update, context, parent_id, files_page)
+        await create_folder_start(update, context, parent_id, files_page)
     elif data == "file_with_pwd":
         context.user_data['temp_file_with_pwd'] = True
         await query.message.reply_text("Введите пароль для файла:")
@@ -608,15 +609,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text.strip()
     
-    # Обработка создания папки с паролем (сначала пароль, потом название)
-    if context.user_data.get('new_folder_with_password') and context.user_data.get('new_folder_password') is None:
-        context.user_data['new_folder_password'] = text
-        await update.message.reply_text("Введите название папки:")
-        return
-    
-    # Обработка создания папки (название)
+    # Обработка создания папки (новая простая логика)
     if context.user_data.get('new_folder_parent') is not None:
-        await handle_folder_creation(update, context)
+        await process_folder_creation(update, context)
         return
     
     # Обработка ожидания ключа для /get
@@ -648,7 +643,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Файл с ключом `{text}` удалён.")
         return
     
-    # Обработка пароля для файла (из ссылки или /get)
+    # Обработка пароля для файла
     if context.user_data.get('pending_file_key'):
         key = context.user_data.pop('pending_file_key')
         info = get_file_info(key)
@@ -674,7 +669,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Неверный пароль. Доступ к папке запрещён.")
         return
     
-    # Обработка пароля для файла при загрузке (из текстового сообщения)
+    # Обработка пароля для файла при загрузке
     if context.user_data.get('temp_file_with_pwd') is True and context.user_data.get('temp_file') is not None:
         password = text
         context.user_data['temp_file_with_pwd'] = False
@@ -683,7 +678,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("❓ Неизвестная команда. Используйте /start")
 
-# --- Команды ---
 async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -744,7 +738,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(0.05)
     await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
 
-# --- Запуск ---
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
