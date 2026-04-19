@@ -38,7 +38,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Инициализация БД (добавлено поле expires_at) ---
+# --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -225,7 +225,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     
     for key, filename, created_at, expires_at in files:
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
-        # Показываем срок хранения
         if expires_at:
             expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
             display_name = f"📄 {filename[:20]} (до {expires_str})"
@@ -241,7 +240,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     if nav_buttons:
         keyboard.append(nav_buttons)
     
-    # Кнопка "Новая папка" ТОЛЬКО в корне
     if parent_id == 0:
         keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}")])
     
@@ -279,7 +277,6 @@ async def send_file_by_info(chat_id, info, key, bot):
 
 # --- Автоматическое удаление просроченных файлов ---
 async def check_expired_files(app):
-    """Фоновая задача: проверяет и удаляет просроченные файлы раз в час"""
     while True:
         try:
             expired = get_expired_files()
@@ -294,7 +291,7 @@ async def check_expired_files(app):
                         logger.error(f"Не удалось удалить {filename}: {e}")
         except Exception as e:
             logger.error(f"Ошибка при проверке просроченных файлов: {e}")
-        await asyncio.sleep(3600)  # 1 час
+        await asyncio.sleep(3600)
 
 # --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -376,6 +373,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
+# --- ОСНОВНАЯ ФУНКЦИЯ ПРИЁМА ФАЙЛОВ (ИСПРАВЛЕНА) ---
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -408,7 +406,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неподдерживаемый тип файла.")
         return
 
-    # Сохраняем временные данные
     context.user_data['temp_file'] = {
         'file_id': file_id,
         'filename': filename,
@@ -416,7 +413,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'user_id': user.id,
         'user_first_name': user.first_name
     }
-    # Спрашиваем срок хранения
+    
     await update.message.reply_text(
         f"📁 Файл *{filename}*\n\nВыберите срок хранения:",
         parse_mode="Markdown",
@@ -442,7 +439,6 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
     user_id = temp['user_id']
     user_first_name = temp['user_first_name']
     
-    # Рассчитываем дату истечения
     expires_at = None
     period_text = ""
     if period == "1h":
@@ -460,7 +456,6 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
     elif period == "forever":
         period_text = "навсегда"
     
-    # Спрашиваем про пароль
     context.user_data['temp_file_data'] = {
         'file_id': file_id,
         'filename': filename,
@@ -686,7 +681,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("period_"):
         try:
             parts = data.split("_")
-            period = parts[1]  # 1h, 1d, 1w, 1m, forever
+            period = parts[1]
             await save_file_with_options(update, context, period, is_callback=True)
         except:
             await query.answer("Ошибка", show_alert=True)
@@ -726,12 +721,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = update.message.text.strip()
     
-    # Создание папки
     if context.user_data.get('new_folder_parent') is not None:
         await process_folder_creation(update, context)
         return
     
-    # Обработка пароля для файла (из ссылки)
     if context.user_data.get('pending_file_key'):
         key = context.user_data.pop('pending_file_key')
         info = get_file_info(key)
@@ -742,7 +735,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Неверный пароль. Доступ запрещён.")
         return
     
-    # Обработка /get по ключу
     if context.user_data.get('waiting_for') == 'get_key':
         context.user_data['waiting_for'] = None
         info = get_file_info(text)
@@ -756,7 +748,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_file_by_info(update.effective_chat.id, info, text, context.bot)
         return
     
-    # Обработка /delete по ключу
     if context.user_data.get('waiting_for') == 'delete_key':
         context.user_data['waiting_for'] = None
         info = get_file_info(text)
@@ -771,7 +762,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Файл с ключом `{text}` удалён.")
         return
     
-    # Обработка пароля для финального сохранения файла
     if context.user_data.get('temp_file_needs_pwd') is True and context.user_data.get('temp_file_data') is not None:
         password = text
         context.user_data['temp_file_needs_pwd'] = False
