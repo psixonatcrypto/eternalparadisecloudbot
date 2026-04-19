@@ -69,7 +69,6 @@ def init_db():
     )''')
     conn.commit()
     conn.close()
-    logger.info("База данных инициализирована")
 
 # --- Функции для паролей ---
 def hash_password(password):
@@ -384,11 +383,17 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text("Установить пароль на этот файл?", reply_markup=keyboard)
 
-async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
-    query = update.callback_query
+async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None, is_callback=True):
+    if is_callback:
+        query = update.callback_query
+        message = query.message
+    else:
+        query = None
+        message = update.message
+    
     temp = context.user_data.get('temp_file')
     if not temp:
-        await query.message.reply_text("❌ Ошибка: файл не найден.")
+        await message.reply_text("❌ Ошибка: файл не найден.")
         return
     
     file_id = temp['file_id']
@@ -416,7 +421,7 @@ async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         
         if password:
-            await query.message.edit_text(
+            await message.reply_text(
                 f"✅ Файл *{filename}* сохранён с паролем!\n\n"
                 f"🔗 *Ссылка:* {deep_link}\n"
                 f"📌 Ключ: `{key}`\n"
@@ -425,7 +430,7 @@ async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_
                 reply_markup=file_actions_keyboard(key, has_password=True)
             )
         else:
-            await query.message.edit_text(
+            await message.reply_text(
                 f"✅ Файл *{filename}* сохранён!\n\n"
                 f"🔗 *Ссылка:* {deep_link}\n"
                 f"📌 Ключ: `{key}`",
@@ -433,18 +438,19 @@ async def save_file_with_password(update: Update, context: ContextTypes.DEFAULT_
                 reply_markup=file_actions_keyboard(key, has_password=False)
             )
         del context.user_data['temp_file']
-        await query.answer()
+        if query:
+            await query.answer()
     except Exception as e:
         logger.error(f"Ошибка при сохранении: {e}")
-        await query.message.edit_text("❌ Ошибка при сохранении файла.")
-        await query.answer()
+        await message.reply_text("❌ Ошибка при сохранении файла.")
+        if query:
+            await query.answer()
 
 async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
     query = update.callback_query
     remove_file_password(key)
     await query.answer("✅ Пароль снят!", show_alert=True)
     
-    # Обновляем кнопки
     deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📥 Скачать", url=deep_link)],
@@ -453,15 +459,13 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
 
-async def create_new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page, with_password, password=None):
+async def create_new_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page, with_password):
     query = update.callback_query
-    user_id = update.effective_user.id
-    
     context.user_data['new_folder_parent'] = parent_id
     context.user_data['new_folder_files_page'] = files_page
     context.user_data['new_folder_with_password'] = with_password
     
-    if with_password and not password:
+    if with_password:
         context.user_data['waiting_for_folder_password'] = True
         await query.message.reply_text("Введите пароль для папки:")
         await query.answer()
@@ -567,19 +571,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         parent_id = int(parts[3])
         files_page = int(parts[4])
-        await create_new_folder(update, context, parent_id, files_page, True, None)
+        await create_new_folder(update, context, parent_id, files_page, True)
     elif data.startswith("new_folder_no_"):
         parts = data.split("_")
         parent_id = int(parts[3])
         files_page = int(parts[4])
-        await create_new_folder(update, context, parent_id, files_page, False, None)
+        await create_new_folder(update, context, parent_id, files_page, False)
     elif data == "file_with_pwd":
         context.user_data['temp_file_with_pwd'] = True
         await query.message.reply_text("Введите пароль для файла:")
         await query.answer()
     elif data == "file_no_pwd":
         context.user_data['temp_file_with_pwd'] = False
-        await save_file_with_password(update, context, password=None)
+        await save_file_with_password(update, context, password=None, is_callback=True)
     elif data.startswith("unlock_"):
         key = data[7:]
         await unlock_file(update, context, key)
@@ -670,11 +674,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Неверный пароль. Доступ к папке запрещён.")
         return
     
-    # Обработка пароля для файла при загрузке
+    # Обработка пароля для файла при загрузке (из текстового сообщения)
     if context.user_data.get('temp_file_with_pwd') is True and context.user_data.get('temp_file') is not None:
         password = text
         context.user_data['temp_file_with_pwd'] = False
-        await save_file_with_password(update, context, password)
+        await save_file_with_password(update, context, password, is_callback=False)
         return
     
     await update.message.reply_text("❓ Неизвестная команда. Используйте /start")
