@@ -6,8 +6,6 @@ import asyncio
 import threading
 import hashlib
 import datetime
-import qrcode
-import io
 from uuid import uuid4
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -42,6 +40,18 @@ ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 С Ув. Eternal Paradise"""
 
 COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 @Eternal_paradise_supbot\n\nМы рассмотрим вашу жалобу в ближайшее время."
+
+# Текст для команды /help
+HELP_TEXT = """📌 *Как пользоваться:*
+1. Отправьте файл – выберите срок хранения.
+2. При желании установите пароль.
+3. Нажмите «Мои файлы» – увидите папки и файлы.
+4. Нажмите на файл – скачается.
+5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».
+
+Команды: /get <ключ>, /delete <ключ>
+
+По всем вопросам: @Eternal_paradise_supbot"""
 # =================================
 
 if not BOT_TOKEN or not CHANNEL_ID:
@@ -206,25 +216,6 @@ def get_new_users_count(days=0):
     conn.close()
     return count
 
-# --- Генерация QR-кода ---
-async def generate_qr_code(data):
-    """Генерирует QR-код для ссылки"""
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
-    )
-    qr.add_data(data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    # Сохраняем в байты
-    img_bytes = io.BytesIO()
-    img.save(img_bytes, format='PNG')
-    img_bytes.seek(0)
-    return img_bytes
-
 # --- Клавиатуры ---
 def main_keyboard():
     keyboard = [
@@ -245,7 +236,6 @@ def file_actions_keyboard(key, has_password=False):
         keyboard.append([InlineKeyboardButton("🔓 Снять пароль", callback_data=f"unlock_{key}")])
     keyboard.append([InlineKeyboardButton("📥 Скачать", url=deep_link)])
     keyboard.append([InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")])
-    keyboard.append([InlineKeyboardButton("🔲 QR-код", callback_data=f"qr_{key}")])
     keyboard.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -365,54 +355,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-    await update.message.reply_text(
-        "📌 *Как пользоваться:*\n"
-        "1. Отправьте файл – выберите срок хранения.\n"
-        "2. При желании установите пароль.\n"
-        "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-        "4. Нажмите на файл – скачается.\n"
-        "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n"
-        "6. У каждого файла есть кнопка «🔲 QR-код» для быстрого доступа.\n\n"
-        "Команды: /get <ключ>, /delete <ключ>\n\n"
-        "Если обнаружили баг: @Eternal_paradise_supbot",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка «О проекте»"""
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(ABOUT_TEXT, parse_mode="Markdown", disable_web_page_preview=True)
 
 async def complaint(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка «Жалоба»"""
     query = update.callback_query
     await query.answer()
     await query.message.reply_text(COMPLAINT_TEXT, parse_mode="Markdown", disable_web_page_preview=True)
-
-async def show_qr(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
-    """Показывает QR-код для скачивания файла"""
-    query = update.callback_query
-    info = get_file_info(key)
-    if not info:
-        await query.answer("❌ Файл не найден", show_alert=True)
-        return
-    
-    deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
-    
-    try:
-        qr_img = await generate_qr_code(deep_link)
-        await query.message.reply_photo(
-            photo=qr_img,
-            caption=f"🔲 *QR-код для файла:* {info['filename']}\n\n"
-                    f"🔗 Ссылка: {deep_link}\n\n"
-                    f"Отсканируйте QR-код, чтобы скачать файл.",
-            parse_mode="Markdown"
-        )
-        await query.answer()
-    except Exception as e:
-        logger.error(f"Ошибка генерации QR-кода: {e}")
-        await query.answer("❌ Ошибка генерации QR-кода", show_alert=True)
 
 async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id=0, files_page=0):
     query = update.callback_query
@@ -545,7 +498,6 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
     await query.message.edit_text(f"Срок хранения: {period_text}\n\nУстановить пароль на файл?", reply_markup=keyboard)
 
 async def final_save_file_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
-    """Сохранение файла при нажатии кнопки (есть callback_query)"""
     query = update.callback_query
     await query.answer()
     
@@ -557,7 +509,6 @@ async def final_save_file_from_callback(update: Update, context: ContextTypes.DE
     await _save_file(query.message, context, temp, password)
 
 async def final_save_file_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
-    """Сохранение файла при вводе пароля текстом (нет callback_query)"""
     message = update.message
     temp = context.user_data.get('temp_file_data')
     if not temp:
@@ -567,7 +518,6 @@ async def final_save_file_from_text(update: Update, context: ContextTypes.DEFAUL
     await _save_file(message, context, temp, password)
 
 async def _save_file(message, context, temp, password=None):
-    """Общая функция сохранения файла"""
     file_id = temp['file_id']
     filename = temp['filename']
     media_type = temp['media_type']
@@ -612,15 +562,12 @@ async def _save_file(message, context, temp, password=None):
             reply_markup=file_actions_keyboard(key, has_password=bool(password))
         )
         
-        # Очищаем временные данные
         context.user_data.pop('temp_file', None)
         context.user_data.pop('temp_file_data', None)
         context.user_data.pop('temp_file_needs_pwd', None)
         
     except Exception as e:
         logger.error(f"Ошибка при сохранении: {e}")
-        import traceback
-        traceback.print_exc()
         await message.reply_text("❌ Ошибка при сохранении файла. Попробуйте ещё раз.")
 
 async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
@@ -632,7 +579,6 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📥 Скачать", url=deep_link)],
         [InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")],
-        [InlineKeyboardButton("🔲 QR-код", callback_data=f"qr_{key}")],
         [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")]
     ])
     await query.message.edit_reply_markup(reply_markup=keyboard)
@@ -661,7 +607,6 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
     query = update.callback_query
     user_id = update.effective_user.id
     
-    # Получаем информацию о папке
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('SELECT name, parent_id FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
@@ -674,15 +619,12 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
     
     folder_name, parent_id = row
     
-    # Удаляем все файлы в папке
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Получаем все файлы в папке для удаления из канала
     c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
     files_in_folder = c.fetchall()
     
-    # Удаляем файлы из канала
     for key, message_id in files_in_folder:
         try:
             await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=message_id)
@@ -690,14 +632,11 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
         except Exception as e:
             logger.error(f"Не удалось удалить файл {key}: {e}")
     
-    # Удаляем файлы из БД
     c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
     
-    # Удаляем все подпапки (рекурсивно)
     c.execute('SELECT id FROM folders WHERE parent_id = ? AND user_id = ?', (folder_id, user_id))
     subfolders = c.fetchall()
     for sub_id, in subfolders:
-        # Удаляем файлы в подпапках
         c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
         sub_files = c.fetchall()
         for key, message_id in sub_files:
@@ -708,7 +647,6 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
         c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
         c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (sub_id, user_id))
     
-    # Удаляем саму папку
     c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
     conn.commit()
     conn.close()
@@ -767,18 +705,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "complaint":
         await complaint(update, context)
     elif data == "help":
-        await query.message.edit_text(
-            "📌 *Как пользоваться:*\n"
-            "1. Отправьте файл – выберите срок хранения.\n"
-            "2. При желании установите пароль.\n"
-            "3. Нажмите «Мои файлы» – увидите папки и файлы.\n"
-            "4. Нажмите на файл – скачается.\n"
-            "5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».\n"
-            "6. У каждого файла есть кнопка «🔲 QR-код» для быстрого доступа.\n\n"
-            "Команды: /get <ключ>, /delete <ключ>",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]])
-        )
+        await query.message.edit_text(HELP_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]))
         await query.answer()
     elif data == "my_files_root":
         await my_files(update, context, 0, 0)
@@ -854,9 +781,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     elif data == "final_no_pwd":
         await final_save_file_from_callback(update, context, password=None)
-    elif data.startswith("qr_"):
-        key = data[3:]
-        await show_qr(update, context, key)
     elif data.startswith("unlock_"):
         key = data[7:]
         await unlock_file(update, context, key)
@@ -996,7 +920,6 @@ def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Запускаем фоновую задачу для удаления просроченных файлов
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(check_expired_files(app))
@@ -1014,7 +937,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (с кнопками О проекте, Жалоба, QR-код)")
+    logger.info("Бот запущен")
     app.run_polling()
 
 if __name__ == "__main__":
