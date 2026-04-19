@@ -226,8 +226,11 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     for key, filename, created_at, expires_at in files:
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         if expires_at:
-            expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
-            display_name = f"📄 {filename[:20]} (до {expires_str})"
+            try:
+                expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+                display_name = f"📄 {filename[:20]} (до {expires_str})"
+            except:
+                display_name = f"📄 {filename[:30]}"
         else:
             display_name = f"📄 {filename[:30]}"
         keyboard.append([InlineKeyboardButton(display_name, url=deep_link)])
@@ -252,13 +255,13 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     
     return InlineKeyboardMarkup(keyboard)
 
-def storage_keyboard(file_id, filename):
+def storage_keyboard():
     keyboard = [
-        [InlineKeyboardButton("⏰ 1 час", callback_data=f"period_1h_{file_id}")],
-        [InlineKeyboardButton("📅 1 день", callback_data=f"period_1d_{file_id}")],
-        [InlineKeyboardButton("📆 1 неделя", callback_data=f"period_1w_{file_id}")],
-        [InlineKeyboardButton("🗓 1 месяц", callback_data=f"period_1m_{file_id}")],
-        [InlineKeyboardButton("♾ Навсегда", callback_data=f"period_forever_{file_id}")],
+        [InlineKeyboardButton("⏰ 1 час", callback_data="period_1h")],
+        [InlineKeyboardButton("📅 1 день", callback_data="period_1d")],
+        [InlineKeyboardButton("📆 1 неделя", callback_data="period_1w")],
+        [InlineKeyboardButton("🗓 1 месяц", callback_data="period_1m")],
+        [InlineKeyboardButton("♾ Навсегда", callback_data="period_forever")],
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_upload")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -373,7 +376,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- ОСНОВНАЯ ФУНКЦИЯ ПРИЁМА ФАЙЛОВ (ИСПРАВЛЕНА) ---
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -417,7 +419,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📁 Файл *{filename}*\n\nВыберите срок хранения:",
         parse_mode="Markdown",
-        reply_markup=storage_keyboard(file_id, filename)
+        reply_markup=storage_keyboard()
     )
 
 async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period, is_callback=True):
@@ -430,7 +432,7 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
     
     temp = context.user_data.get('temp_file')
     if not temp:
-        await message.reply_text("❌ Ошибка: файл не найден.")
+        await message.reply_text("❌ Ошибка: файл не найден. Попробуйте загрузить заново.")
         return
     
     file_id = temp['file_id']
@@ -680,9 +682,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Ошибка", show_alert=True)
     elif data.startswith("period_"):
         try:
-            parts = data.split("_")
-            period = parts[1]
-            await save_file_with_options(update, context, period, is_callback=True)
+            period = data.split("_")[1]
+            if context.user_data.get('temp_file'):
+                await save_file_with_options(update, context, period, is_callback=True)
+            else:
+                await query.answer("❌ Ошибка: файл не найден. Попробуйте заново.", show_alert=True)
         except:
             await query.answer("Ошибка", show_alert=True)
     elif data == "cancel_upload":
@@ -853,7 +857,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (с функцией срока хранения файлов)")
+    logger.info("Бот запущен (полная версия с выбором срока хранения)")
     app.run_polling()
 
 if __name__ == "__main__":
