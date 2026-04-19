@@ -86,6 +86,7 @@ def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user
               (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at))
     conn.commit()
     conn.close()
+    logger.info(f"Файл сохранён в БД: ключ={key}, имя={filename}")
 
 def get_file_info(key):
     conn = sqlite3.connect(DB_NAME)
@@ -511,11 +512,16 @@ async def final_save_file(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             reply_markup=file_actions_keyboard(key, has_password=bool(password))
         )
         
-        del context.user_data['temp_file']
-        del context.user_data['temp_file_data']
+        # Очищаем временные данные
+        context.user_data.pop('temp_file', None)
+        context.user_data.pop('temp_file_data', None)
+        context.user_data.pop('temp_file_needs_pwd', None)
+        
     except Exception as e:
         logger.error(f"Ошибка при сохранении: {e}")
-        await query.message.edit_text("❌ Ошибка при сохранении файла.")
+        import traceback
+        traceback.print_exc()
+        await query.message.edit_text("❌ Ошибка при сохранении файла. Попробуйте ещё раз.")
 
 async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
     query = update.callback_query
