@@ -212,13 +212,14 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     if nav_buttons:
         keyboard.append(nav_buttons)
     
-    action_buttons = []
-    action_buttons.append(InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}"))
-    action_buttons.append(InlineKeyboardButton("📤 Добавить файл", callback_data="upload"))
-    keyboard.append(action_buttons)
+    # Кнопка "Новая папка" ТОЛЬКО в корне (parent_id == 0)
+    if parent_id == 0:
+        keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}")])
+    
+    keyboard.append([InlineKeyboardButton("📤 Добавить файл", callback_data="upload")])
     
     if parent_id != 0:
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"my_files_{parent_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"my_files_back_{parent_id}")])
     else:
         keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
     
@@ -456,6 +457,36 @@ async def process_folder_creation(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(f"✅ Папка «{text}» создана!")
     await my_files(update, context, parent_id, files_page)
 
+# --- Админ-команда удаления файла по ключу ---
+async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Укажите ключ: `/delkey ключ`")
+        return
+    
+    key = context.args[0]
+    info = get_file_info(key)
+    if not info:
+        await update.message.reply_text(f"❌ Ключ `{key}` не найден.")
+        return
+    
+    # Удаляем из канала
+    try:
+        await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
+        await update.message.reply_text(f"✅ Файл с ключом `{key}` удалён из канала.")
+    except Exception as e:
+        logger.error(f"Не удалось удалить из канала: {e}")
+        await update.message.reply_text(f"⚠ Не удалось удалить файл из канала.")
+    
+    # Удаляем из БД
+    delete_file_info(key)
+    await update.message.reply_text(f"✅ Запись с ключом `{key}` удалена из базы данных.")
+
 # --- Обработчики кнопок ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -488,6 +519,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
     elif data == "my_files_root":
         await my_files(update, context, 0, 0)
+    elif data.startswith("my_files_back_"):
+        try:
+            current_parent = int(data.split("_")[3])
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute('SELECT parent_id FROM folders WHERE id = ? AND user_id = ?', (current_parent, update.effective_user.id))
+            row = c.fetchone()
+            conn.close()
+            parent_id = row[0] if row else 0
+            await my_files(update, context, parent_id, 0)
+        except:
+            await query.answer("Ошибка", show_alert=True)
     elif data.startswith("my_files_"):
         try:
             parent_id = int(data.split("_")[2])
@@ -578,7 +621,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if info.get("password_hash"):
             context.user_data['pending_file_key'] = text
-            await update.message.reply_text("🔒 Файл защищён паролем. Введите пароль:")
+            await update.message.reply_text("🔒 Файл защищ favored паролем. Введите пароль:")
         else:
             await send_file_by_info(update.effective_chat.id, info, text, context.bot)
         return
@@ -675,6 +718,7 @@ def main():
     app.add_handler(CommandHandler("help", help_text))
     app.add_handler(CommandHandler("get", get_command))
     app.add_handler(CommandHandler("delete", delete_command))
+    app.add_handler(CommandHandler("delkey", delkey_command))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -683,7 +727,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (папки без паролей, пароль только на файлы)")
+    logger.info("Бот запущен")
     app.run_polling()
 
 if __name__ == "__main__":
