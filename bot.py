@@ -37,10 +37,10 @@ ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 • Создавать папки для организации
 • Выбирать срок хранения
 
-По всем вопросам: @Eternal_paradise_supbot
-С Ув. Eternal Paradise"""
+По всем вопросам: [Eternal_paradise_supbot](https://t.me/Eternal_paradise_supboy)
+С Ув. Eternal Paradise """
 
-COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 @Eternal_paradise_supbot\n\nМы рассмотрим вашу жалобу в ближайшее время."
+COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 [Eternal_paradise_supbot](https://t.me/Eternal_paradise_supboy)\n\nМы рассмотрим вашу жалобу в ближайшее время."
 
 HELP_TEXT = """📌 *Как пользоваться:*
 1. Отправьте файл – выберите срок хранения.
@@ -51,7 +51,7 @@ HELP_TEXT = """📌 *Как пользоваться:*
 
 Команды: /get <ключ>, /delete <ключ>
 
-По всем вопросам: @Eternal_paradise_supbot"""
+По всем вопросам: [Eternal_paradise_supbot](https://t.me/Eternal_paradise_supboy)"""
 # =================================
 
 if not BOT_TOKEN or not CHANNEL_ID:
