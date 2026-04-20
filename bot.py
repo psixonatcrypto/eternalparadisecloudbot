@@ -46,7 +46,7 @@ HELP_TEXT = """📌 *Как пользоваться:*
 1. Отправьте файл – выберите срок хранения.
 2. При желании установите пароль.
 3. Нажмите «Мои файлы» – увидите папки и файлы.
-4. Нажмите на файл – скачается.
+4. Нажмите на файл – откроется меню управления (для своих файлов).
 5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».
 
 Команды: /get <ключ>, /delete <ключ>
@@ -139,7 +139,7 @@ def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user
 def get_file_info(key):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at, downloads_count, failed_attempts, blocked_until FROM files WHERE key = ?', (key,))
+    c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at, downloads_count, failed_attempts, blocked_until, folder_id, user_id FROM files WHERE key = ?', (key,))
     row = c.fetchone()
     conn.close()
     if row:
@@ -147,7 +147,7 @@ def get_file_info(key):
             "file_id": row[0], "filename": row[1], "media_type": row[2],
             "message_id": row[3], "password_hash": row[4], "expires_at": row[5],
             "downloads_count": row[6] or 0, "failed_attempts": row[7] or 0,
-            "blocked_until": row[8]
+            "blocked_until": row[8], "folder_id": row[9] or 0, "user_id": row[10]
         }
     return None
 
@@ -274,6 +274,13 @@ def get_new_users_count(days=0):
     conn.close()
     return count
 
+def move_file_to_folder(key, target_folder_id, user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE files SET folder_id = ? WHERE key = ? AND user_id = ?', (target_folder_id, key, user_id))
+    conn.commit()
+    conn.close()
+
 # --- Клавиатуры ---
 def main_keyboard():
     keyboard = [
@@ -287,13 +294,15 @@ def main_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def file_actions_keyboard(key, has_password=False):
+def owner_file_actions_keyboard(key, has_password=False, folder_id=0):
     deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
     keyboard = []
     if has_password:
         keyboard.append([InlineKeyboardButton("🔓 Снять пароль", callback_data=f"unlock_{key}")])
     keyboard.append([InlineKeyboardButton("📥 Скачать", url=deep_link)])
+    keyboard.append([InlineKeyboardButton("🔗 Ссылка для друга", callback_data=f"share_link_{key}")])
     keyboard.append([InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")])
+    keyboard.append([InlineKeyboardButton("📁 Перенести в папку", callback_data=f"move_file_{key}_{folder_id}")])
     keyboard.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -306,7 +315,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
         keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"open_folder_{folder_id}_{files_page}")])
     
     for key, filename, created_at, expires_at, downloads_count in files:
-        deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         if expires_at:
             try:
                 expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
@@ -315,7 +323,7 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
                 display_name = f"📄 {filename[:20]} 👁 {downloads_count}"
         else:
             display_name = f"📄 {filename[:20]} 👁 {downloads_count}"
-        keyboard.append([InlineKeyboardButton(display_name, url=deep_link)])
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_{parent_id}_{files_page}")])
     
     nav_buttons = []
     if files_page > 0:
@@ -349,6 +357,12 @@ def storage_keyboard():
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_upload")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def share_link_keyboard(key, folder_id):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Назад к файлу", callback_data=f"back_to_file_{key}_{folder_id}")]
+    ])
+    return keyboard
 
 async def send_file_by_info(chat_id, info, key, bot):
     if info["media_type"] == "photo":
@@ -663,7 +677,7 @@ async def _save_file(message, context, temp, password=None):
         await message.reply_text(
             result_text,
             parse_mode="Markdown",
-            reply_markup=file_actions_keyboard(key, has_password=bool(password))
+            reply_markup=owner_file_actions_keyboard(key, has_password=bool(password))
         )
         
         context.user_data.pop('temp_file', None)
@@ -681,16 +695,147 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
         remove_file_password(key)
         await query.answer("✅ Пароль снят!", show_alert=True)
         
-        deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Скачать", url=deep_link)],
-            [InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")],
-            [InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")]
-        ])
-        await query.message.edit_reply_markup(reply_markup=keyboard)
+        info = get_file_info(key)
+        if info:
+            has_password = info.get("password_hash") is not None
+            keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0))
+            await query.message.edit_reply_markup(reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка в unlock_file: {e}")
         await send_error_to_admin(f"Ошибка в unlock_file:\n{traceback.format_exc()}")
+
+async def open_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, parent_id, files_page):
+    try:
+        query = update.callback_query
+        user_id = update.effective_user.id
+        
+        info = get_file_info(key)
+        if not info:
+            await query.answer("❌ Файл не найден", show_alert=True)
+            return
+        
+        is_owner = (info.get("user_id") == user_id)
+        
+        if is_owner:
+            has_password = info.get("password_hash") is not None
+            keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0))
+            await query.message.reply_text(
+                f"📄 *{info['filename']}*\n\n"
+                f"📌 Ключ: `{key}`\n"
+                f"👁 Скачиваний: {info['downloads_count']}\n"
+                f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n\n"
+                f"Выберите действие:",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        else:
+            if is_file_blocked(key):
+                await query.answer("⛔ Доступ к файлу заблокирован", show_alert=True)
+                return
+            if info.get("password_hash"):
+                context.user_data['pending_file_key'] = key
+                await query.message.reply_text("🔒 Файл защищён паролем. Введите пароль:")
+            else:
+                increment_downloads(key)
+                await send_file_by_info(update.effective_chat.id, info, key, context.bot)
+        
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в open_file: {e}")
+        await send_error_to_admin(f"Ошибка в open_file:\n{traceback.format_exc()}")
+
+async def share_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
+    try:
+        query = update.callback_query
+        info = get_file_info(key)
+        if not info:
+            await query.answer("❌ Файл не найден", show_alert=True)
+            return
+        
+        deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
+        
+        await query.message.reply_text(
+            f"🔗 *Отправьте эту ссылку другу:*\n\n"
+            f"`{deep_link}`\n\n"
+            f"📌 *Ключ:* `{key}`\n\n"
+            f"👤 *Получатель:* просто перейдёт по ссылке и файл скачается.\n"
+            f"🔒 *Пароль:* {'установлен' if info.get('password_hash') else 'нет'}",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад к файлу", callback_data=f"back_to_file_{key}_{info.get('folder_id', 0)}")]])
+        )
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в share_file_link: {e}")
+        await send_error_to_admin(f"Ошибка в share_file_link:\n{traceback.format_exc()}")
+
+async def back_to_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, folder_id):
+    try:
+        query = update.callback_query
+        info = get_file_info(key)
+        if not info:
+            await query.answer("❌ Файл не найден", show_alert=True)
+            return
+        
+        has_password = info.get("password_hash") is not None
+        keyboard = owner_file_actions_keyboard(key, has_password, folder_id)
+        
+        await query.message.edit_text(
+            f"📄 *{info['filename']}*\n\n"
+            f"📌 Ключ: `{key}`\n"
+            f"👁 Скачиваний: {info['downloads_count']}\n"
+            f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n\n"
+            f"Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в back_to_file: {e}")
+        await send_error_to_admin(f"Ошибка в back_to_file:\n{traceback.format_exc()}")
+
+async def move_file_start(update: Update, context: ContextTypes.DEFAULT_TYPE, key, current_folder_id):
+    try:
+        query = update.callback_query
+        user_id = update.effective_user.id
+        
+        folders = get_user_folders(user_id, parent_id=0)
+        
+        if not folders:
+            await query.answer("❌ У вас нет папок. Сначала создайте папку.", show_alert=True)
+            return
+        
+        context.user_data['moving_file'] = {
+            'key': key,
+            'current_folder_id': current_folder_id
+        }
+        
+        keyboard = []
+        for folder_id, folder_name in folders:
+            if folder_id != current_folder_id:
+                keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"move_to_folder_{key}_{folder_id}")])
+        keyboard.append([InlineKeyboardButton("🔙 Отмена", callback_data="cancel_move")])
+        
+        await query.message.reply_text("📁 Выберите папку для перемещения файла:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в move_file_start: {e}")
+        await send_error_to_admin(f"Ошибка в move_file_start:\n{traceback.format_exc()}")
+
+async def move_file_to_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, key, target_folder_id):
+    try:
+        query = update.callback_query
+        user_id = update.effective_user.id
+        
+        move_file_to_folder(key, target_folder_id, user_id)
+        
+        context.user_data.pop('moving_file', None)
+        
+        await query.answer("✅ Файл перемещён!", show_alert=True)
+        await query.message.edit_text("Файл перемещён в выбранную папку.")
+    except Exception as e:
+        logger.error(f"Ошибка в move_file_to_folder: {e}")
+        await send_error_to_admin(f"Ошибка в move_file_to_folder:\n{traceback.format_exc()}")
 
 # --- Создание папок ---
 async def new_folder_start(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id, files_page):
@@ -861,6 +1006,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await my_files(update, context, folder_id, files_page)
             except:
                 await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("open_file_"):
+            try:
+                parts = data.split("_")
+                key = parts[2]
+                parent_id = int(parts[3]) if len(parts) > 3 else 0
+                files_page = int(parts[4]) if len(parts) > 4 else 0
+                await open_file(update, context, key, parent_id, files_page)
+            except:
+                await query.answer("Ошибка", show_alert=True)
         elif data.startswith("files_page_"):
             try:
                 parts = data.split("_")
@@ -907,6 +1061,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
         elif data == "final_no_pwd":
             await final_save_file_from_callback(update, context, password=None)
+        elif data.startswith("share_link_"):
+            key = data[11:]
+            await share_file_link(update, context, key)
+        elif data.startswith("back_to_file_"):
+            parts = data.split("_")
+            key = parts[3]
+            folder_id = int(parts[4]) if len(parts) > 4 else 0
+            await back_to_file(update, context, key, folder_id)
+        elif data.startswith("move_file_"):
+            parts = data.split("_")
+            key = parts[2]
+            current_folder_id = int(parts[3]) if len(parts) > 3 else 0
+            await move_file_start(update, context, key, current_folder_id)
+        elif data.startswith("move_to_folder_"):
+            parts = data.split("_")
+            key = parts[3]
+            target_folder_id = int(parts[4]) if len(parts) > 4 else 0
+            await move_file_to_folder(update, context, key, target_folder_id)
+        elif data == "cancel_move":
+            context.user_data.pop('moving_file', None)
+            await query.message.edit_text("❌ Перемещение отменено.")
+            await query.answer()
         elif data.startswith("unlock_"):
             key = data[7:]
             await unlock_file(update, context, key)
@@ -1103,7 +1279,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (с логами ошибок, счётчиком скачиваний и защитой пароля)")
+    logger.info("Бот запущен (полная версия с управлением файлами)")
     app.run_polling()
 
 if __name__ == "__main__":
