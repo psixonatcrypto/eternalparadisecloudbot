@@ -84,7 +84,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Инициализация БД (добавлены поля для счётчика скачиваний и защиты пароля) ---
+# --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -177,11 +177,11 @@ def increment_failed_attempts(key):
     c = conn.cursor()
     c.execute('UPDATE files SET failed_attempts = failed_attempts + 1 WHERE key = ?', (key,))
     conn.commit()
-    conn.close()
     c.execute('SELECT failed_attempts FROM files WHERE key = ?', (key,))
     row = c.fetchone()
+    attempts = row[0] if row else 0
     conn.close()
-    return row[0] if row else 0
+    return attempts
 
 def block_file_access(key, minutes=60):
     conn = sqlite3.connect(DB_NAME)
@@ -394,7 +394,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             key = context.args[0]
             info = get_file_info(key)
             if info:
-                # Проверка блокировки
                 if is_file_blocked(key):
                     await update.message.reply_text("⛔ Доступ к файлу заблокирован на 1 час из-за частых неверных попыток ввода пароля.")
                     return
@@ -945,13 +944,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             key = context.user_data.pop('pending_file_key')
             info = get_file_info(key)
             if info and info.get("password_hash"):
-                # Проверка блокировки
                 if is_file_blocked(key):
                     await update.message.reply_text("⛔ Доступ к файлу заблокирован на 1 час из-за частых неверных попыток ввода пароля.")
                     return
                 
                 if check_password(text, info["password_hash"]):
-                    # Сбрасываем счётчик попыток
                     conn = sqlite3.connect(DB_NAME)
                     c = conn.cursor()
                     c.execute('UPDATE files SET failed_attempts = 0, blocked_until = NULL WHERE key = ?', (key,))
