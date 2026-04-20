@@ -20,7 +20,7 @@ DB_NAME = "files.db"
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
-# Текст для кнопки "О проекте"
+# Текст для кнопки "О проекте" (правильная ссылка на поддержку)
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 
 Мы — игровое сообщество, объединяющее любителей разных игр.
@@ -64,7 +64,6 @@ logger = logging.getLogger(__name__)
 bot_instance = None
 
 async def send_error_to_admin(error_text):
-    """Отправляет ошибку админу в Telegram"""
     global bot_instance
     if bot_instance and ADMIN_ID:
         try:
@@ -358,12 +357,6 @@ def storage_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def share_link_keyboard(key, folder_id):
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Назад к файлу", callback_data=f"back_to_file_{key}_{folder_id}")]
-    ])
-    return keyboard
-
 async def send_file_by_info(chat_id, info, key, bot):
     if info["media_type"] == "photo":
         await bot.send_photo(chat_id=chat_id, photo=info["file_id"], caption=f"📸 Ваше фото\n👁 Скачиваний: {info['downloads_count']}")
@@ -538,12 +531,16 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Неподдерживаемый тип файла.")
             return
 
+        # Получаем текущую папку из callback_data (если есть)
+        current_folder = context.user_data.get('current_folder', 0)
+        
         context.user_data['temp_file'] = {
             'file_id': file_id,
             'filename': filename,
             'media_type': media_type,
             'user_id': user.id,
-            'user_first_name': user.first_name
+            'user_first_name': user.first_name,
+            'folder_id': current_folder
         }
         
         await update.message.reply_text(
@@ -570,6 +567,7 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
         media_type = temp['media_type']
         user_id = temp['user_id']
         user_first_name = temp['user_first_name']
+        folder_id = temp.get('folder_id', 0)
         
         expires_at = None
         period_text = ""
@@ -595,7 +593,8 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
             'user_id': user_id,
             'user_first_name': user_first_name,
             'expires_at': expires_at.isoformat() if expires_at else None,
-            'period_text': period_text
+            'period_text': period_text,
+            'folder_id': folder_id
         }
         
         keyboard = InlineKeyboardMarkup([
@@ -643,6 +642,7 @@ async def _save_file(message, context, temp, password=None):
     user_first_name = temp['user_first_name']
     expires_at = temp['expires_at']
     period_text = temp['period_text']
+    folder_id = temp.get('folder_id', 0)
     
     password_hash = hash_password(password) if password else None
     
@@ -664,7 +664,7 @@ async def _save_file(message, context, temp, password=None):
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
 
-        save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id=0, password_hash=password_hash, expires_at=expires_at)
+        save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         
         result_text = f"✅ Файл *{filename}* сохранён!\n\n"
@@ -677,7 +677,7 @@ async def _save_file(message, context, temp, password=None):
         await message.reply_text(
             result_text,
             parse_mode="Markdown",
-            reply_markup=owner_file_actions_keyboard(key, has_password=bool(password))
+            reply_markup=owner_file_actions_keyboard(key, has_password=bool(password), folder_id=folder_id)
         )
         
         context.user_data.pop('temp_file', None)
@@ -1003,6 +1003,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parts = data.split("_")
                 folder_id = int(parts[2])
                 files_page = int(parts[3]) if len(parts) > 3 else 0
+                # Сохраняем текущую папку для загрузки файлов
+                context.user_data['current_folder'] = folder_id
                 await my_files(update, context, folder_id, files_page)
             except:
                 await query.answer("Ошибка", show_alert=True)
