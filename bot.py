@@ -20,7 +20,7 @@ DB_NAME = "files.db"
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
-# Текст для кнопки "О проекте" (правильная ссылка на поддержку)
+# Текст для кнопки "О проекте" (ПРАВИЛЬНАЯ ССЫЛКА)
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 
 Мы — игровое сообщество, объединяющее любителей разных игр.
@@ -531,7 +531,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Неподдерживаемый тип файла.")
             return
 
-        # Получаем текущую папку из callback_data (если есть)
         current_folder = context.user_data.get('current_folder', 0)
         
         context.user_data['temp_file'] = {
@@ -1003,7 +1002,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parts = data.split("_")
                 folder_id = int(parts[2])
                 files_page = int(parts[3]) if len(parts) > 3 else 0
-                # Сохраняем текущую папку для загрузки файлов
                 context.user_data['current_folder'] = folder_id
                 await my_files(update, context, folder_id, files_page)
             except:
