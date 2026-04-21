@@ -20,7 +20,7 @@ DB_NAME = "files.db"
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
-# Текст для кнопки "О проекте" (ПРАВИЛЬНАЯ ССЫЛКА)
+# Текст для кнопки "О проекте"
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 
 Мы — игровое сообщество, объединяющее любителей разных игр.
@@ -37,10 +37,10 @@ ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 • Создавать папки для организации
 • Выбирать срок хранения
 
-По всем вопросам: [Eternal_paradise_supbot](https://t.me/Eternal_paradise_supbot)
-С Ув. Eternal Paradise """
+По всем вопросам: @Eternal_paradise_supbot
+С Ув. Eternal Paradise"""
 
-COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 [Eternal_paradise_supbot](https://t.me/Eternal_paradise_supbot)\n\nМы рассмотрим вашу жалобу в ближайшее время."
+COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 @Eternal_paradise_supbot\n\nМы рассмотрим вашу жалобу в ближайшее время."
 
 HELP_TEXT = """📌 *Как пользоваться:*
 1. Отправьте файл – выберите срок хранения.
@@ -51,7 +51,7 @@ HELP_TEXT = """📌 *Как пользоваться:*
 
 Команды: /get <ключ>, /delete <ключ>
 
-По всем вопросам: [Eternal_paradise_supbot](https://t.me/Eternal_paradise_supbot)"""
+По всем вопросам: @Eternal_paradise_supbot"""
 # =================================
 
 if not BOT_TOKEN or not CHANNEL_ID:
@@ -652,6 +652,7 @@ async def _save_file(message, context, temp, password=None):
             expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
             caption += f"\n⏰ Удалить: {expires_str}"
         
+        # Отправляем файл в канал
         if media_type == "photo":
             sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption)
         elif media_type == "video":
@@ -662,6 +663,13 @@ async def _save_file(message, context, temp, password=None):
             sent = await context.bot.send_voice(chat_id=CHANNEL_ID, voice=file_id, caption=caption)
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
+        
+        # Отправляем отдельное сообщение с копируемым ключом (для админа)
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=f"📌 *Ключ:* `<code>{key}</code>",
+            parse_mode="HTML"
+        )
 
         save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
@@ -1228,30 +1236,81 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_error_to_admin(f"Ошибка в delete_command:\n{traceback.format_exc()}")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Рассылка сообщения всем пользователям (с поддержкой медиа)"""
     try:
         if not update.message:
             return
         if update.effective_user.id != ADMIN_ID:
             await update.message.reply_text("⛔ Только администратор.")
             return
-        text = " ".join(context.args)
-        if not text:
-            await update.message.reply_text("Укажите текст рассылки после /broadcast")
-            return
+        
+        message = update.effective_message
+        text = message.text or ""
+        
+        # Убираем команду /broadcast из текста
+        if text.startswith("/broadcast"):
+            text = text.replace("/broadcast", "", 1).strip()
+        
         users = get_all_users()
         if not users:
             await update.message.reply_text("Нет пользователей в базе.")
             return
+        
         sent = 0
         failed = 0
-        for uid in users:
-            try:
-                await context.bot.send_message(chat_id=uid, text=text)
-                sent += 1
-            except:
-                failed += 1
-            await asyncio.sleep(0.05)
+        
+        # Определяем тип вложения
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            for uid in users:
+                try:
+                    await context.bot.send_photo(chat_id=uid, photo=file_id, caption=text)
+                    sent += 1
+                except:
+                    failed += 1
+                await asyncio.sleep(0.05)
+        elif message.video:
+            file_id = message.video.file_id
+            for uid in users:
+                try:
+                    await context.bot.send_video(chat_id=uid, video=file_id, caption=text)
+                    sent += 1
+                except:
+                    failed += 1
+                await asyncio.sleep(0.05)
+        elif message.document:
+            file_id = message.document.file_id
+            for uid in users:
+                try:
+                    await context.bot.send_document(chat_id=uid, document=file_id, caption=text)
+                    sent += 1
+                except:
+                    failed += 1
+                await asyncio.sleep(0.05)
+        elif message.audio:
+            file_id = message.audio.file_id
+            for uid in users:
+                try:
+                    await context.bot.send_audio(chat_id=uid, audio=file_id, caption=text)
+                    sent += 1
+                except:
+                    failed += 1
+                await asyncio.sleep(0.05)
+        else:
+            # Только текст
+            if not text:
+                await update.message.reply_text("Укажите текст или прикрепите файл для рассылки")
+                return
+            for uid in users:
+                try:
+                    await context.bot.send_message(chat_id=uid, text=text)
+                    sent += 1
+                except:
+                    failed += 1
+                await asyncio.sleep(0.05)
+        
         await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
+        
     except Exception as e:
         logger.error(f"Ошибка в broadcast: {e}")
         await send_error_to_admin(f"Ошибка в broadcast:\n{traceback.format_exc()}")
