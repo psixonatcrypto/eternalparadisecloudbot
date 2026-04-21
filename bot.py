@@ -646,7 +646,8 @@ async def _save_file(message, context, temp, password=None):
     
     try:
         key = str(uuid4())[:8]
-        caption = f"📁 Файл от {user_first_name} | Ключ: {key}"
+        # Формируем подпись для канала с ключом в отдельной строке
+        caption = f"📁 Файл от {user_first_name}\n🔑 Ключ: {key}"
         if expires_at:
             expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
             caption += f"\n⏰ Удалить: {expires_str}"
