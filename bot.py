@@ -37,7 +37,7 @@ ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 • Создавать папки для организации
 • Выбирать срок хранения
 
-По всем вопросам: @Eternal_paradise_supbot
+По всем вопросам: [Eternal Paradise Support](https://t.me/Eternal_paradise_supbot)
 С Ув. Eternal Paradise"""
 
 COMPLAINT_TEXT = "⚠️ *Пожаловаться на проблему*\n\nЕсли у вас возникла проблема с ботом, файлом или вы нашли нарушение — напишите в нашу службу поддержки:\n\n👉 @Eternal_paradise_supbot\n\nМы рассмотрим вашу жалобу в ближайшее время."
@@ -51,7 +51,7 @@ HELP_TEXT = """📌 *Как пользоваться:*
 
 Команды: /get <ключ>, /delete <ключ>
 
-По всем вопросам: @Eternal_paradise_supbot"""
+По всем вопросам: [Eternal Paradise Support](https://t.me/Eternal_paradise_supbot)"""
 # =================================
 
 if not BOT_TOKEN or not CHANNEL_ID:
@@ -663,6 +663,13 @@ async def _save_file(message, context, temp, password=None):
             sent = await context.bot.send_voice(chat_id=CHANNEL_ID, voice=file_id, caption=caption)
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
+        
+        # Отправляем отдельное сообщение с копируемым ключом (для админа)
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=f"🔑 *Ключ:* `<code>{key}</code>",
+            parse_mode="HTML"
+        )
 
         save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
@@ -1089,7 +1096,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await unlock_file(update, context, key)
         elif data.startswith("copy_"):
             key = data[5:]
-            # Отправляем ключ в копируемом формате
             await query.message.reply_text(
                 f"<code>{key}</code>",
                 parse_mode="HTML"
