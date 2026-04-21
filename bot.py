@@ -60,7 +60,6 @@ if not BOT_TOKEN or not CHANNEL_ID:
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Глобальная переменная для отправки ошибок админу ---
 bot_instance = None
 
 async def send_error_to_admin(error_text):
@@ -379,6 +378,7 @@ async def check_expired_files(app):
                 for key, message_id, chat_id, filename in expired:
                     try:
                         await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                        logger.info(f"Удалено сообщение {message_id} из канала для файла {filename}")
                         delete_file_info(key)
                         logger.info(f"Автоудаление: {filename} (ключ {key}) удалён")
                     except Exception as e:
@@ -431,7 +431,7 @@ async def help_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message:
             return
-        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
         logger.error(f"Ошибка в help_text: {e}")
         await send_error_to_admin(f"Ошибка в help_text:\n{traceback.format_exc()}")
@@ -652,7 +652,6 @@ async def _save_file(message, context, temp, password=None):
             expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
             caption += f"\n⏰ Удалить: {expires_str}"
         
-        # Отправляем файл в канал
         if media_type == "photo":
             sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption)
         elif media_type == "video":
@@ -663,13 +662,6 @@ async def _save_file(message, context, temp, password=None):
             sent = await context.bot.send_voice(chat_id=CHANNEL_ID, voice=file_id, caption=caption)
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
-        
-        # Отправляем отдельное сообщение с копируемым ключом (для админа)
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=f"🔑 *Ключ:* `<code>{key}</code>",
-            parse_mode="HTML"
-        )
 
         save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
@@ -1096,11 +1088,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await unlock_file(update, context, key)
         elif data.startswith("copy_"):
             key = data[5:]
-            await query.message.reply_text(
-                f"<code>{key}</code>",
-                parse_mode="HTML"
-            )
-            await query.answer("🔑 Ключ отправлен в чат, нажмите на него для копирования")
+            await query.answer(f"Ключ: {key}", show_alert=True)
         elif data.startswith("delete_"):
             key = data[7:]
             info = get_file_info(key)
@@ -1240,81 +1228,30 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_error_to_admin(f"Ошибка в delete_command:\n{traceback.format_exc()}")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Рассылка сообщения всем пользователям (с поддержкой медиа)"""
     try:
         if not update.message:
             return
         if update.effective_user.id != ADMIN_ID:
             await update.message.reply_text("⛔ Только администратор.")
             return
-        
-        message = update.effective_message
-        text = message.text or ""
-        
-        # Убираем команду /broadcast из текста
-        if text.startswith("/broadcast"):
-            text = text.replace("/broadcast", "", 1).strip()
-        
+        text = " ".join(context.args)
+        if not text:
+            await update.message.reply_text("Укажите текст рассылки после /broadcast")
+            return
         users = get_all_users()
         if not users:
             await update.message.reply_text("Нет пользователей в базе.")
             return
-        
         sent = 0
         failed = 0
-        
-        # Определяем тип вложения
-        if message.photo:
-            file_id = message.photo[-1].file_id
-            for uid in users:
-                try:
-                    await context.bot.send_photo(chat_id=uid, photo=file_id, caption=text)
-                    sent += 1
-                except:
-                    failed += 1
-                await asyncio.sleep(0.05)
-        elif message.video:
-            file_id = message.video.file_id
-            for uid in users:
-                try:
-                    await context.bot.send_video(chat_id=uid, video=file_id, caption=text)
-                    sent += 1
-                except:
-                    failed += 1
-                await asyncio.sleep(0.05)
-        elif message.document:
-            file_id = message.document.file_id
-            for uid in users:
-                try:
-                    await context.bot.send_document(chat_id=uid, document=file_id, caption=text)
-                    sent += 1
-                except:
-                    failed += 1
-                await asyncio.sleep(0.05)
-        elif message.audio:
-            file_id = message.audio.file_id
-            for uid in users:
-                try:
-                    await context.bot.send_audio(chat_id=uid, audio=file_id, caption=text)
-                    sent += 1
-                except:
-                    failed += 1
-                await asyncio.sleep(0.05)
-        else:
-            # Только текст
-            if not text:
-                await update.message.reply_text("Укажите текст или прикрепите файл для рассылки")
-                return
-            for uid in users:
-                try:
-                    await context.bot.send_message(chat_id=uid, text=text)
-                    sent += 1
-                except:
-                    failed += 1
-                await asyncio.sleep(0.05)
-        
+        for uid in users:
+            try:
+                await context.bot.send_message(chat_id=uid, text=text)
+                sent += 1
+            except:
+                failed += 1
+            await asyncio.sleep(0.05)
         await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
-        
     except Exception as e:
         logger.error(f"Ошибка в broadcast: {e}")
         await send_error_to_admin(f"Ошибка в broadcast:\n{traceback.format_exc()}")
