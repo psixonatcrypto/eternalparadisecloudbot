@@ -47,10 +47,9 @@ HELP_TEXT = """📌 *Как пользоваться:*
 3. Нажмите «Мои файлы» – увидите папки и файлы.
 4. Нажмите на файл – откроется меню управления (для своих файлов).
 5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».
-6. Используйте /search <текст> для поиска файлов.
-7. Добавляйте файлы в избранное ⭐️
+6. Нажмите «🔎 Поиск» – ищите файлы по названию или ключу.
 
-Команды: /get <ключ>, /delete <ключ>, /search <текст>
+Команды: /get <ключ>, /delete <ключ>
 
 По всем вопросам: [Eternal Paradise Support](https://t.me/Eternal_paradise_supbot)"""
 # =================================
@@ -83,7 +82,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Инициализация БД (добавлено поле is_favorite) ---
+# --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -294,17 +293,21 @@ def toggle_favorite(key, user_id):
     c = conn.cursor()
     c.execute('UPDATE files SET is_favorite = CASE WHEN is_favorite = 1 THEN 0 ELSE 1 END WHERE key = ? AND user_id = ?', (key, user_id))
     conn.commit()
-    conn.close()
     c.execute('SELECT is_favorite FROM files WHERE key = ?', (key,))
     row = c.fetchone()
+    is_favorite = row[0] if row else 0
     conn.close()
-    return row[0] if row else 0
+    return is_favorite
 
 def search_files(user_id, query, limit=20):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT key, filename, created_at, expires_at, downloads_count, is_favorite FROM files WHERE user_id = ? AND filename LIKE ? ORDER BY is_favorite DESC, created_at DESC LIMIT ?',
-              (user_id, f'%{query}%', limit))
+    c.execute('''SELECT key, filename, created_at, expires_at, downloads_count, is_favorite 
+                 FROM files 
+                 WHERE user_id = ? AND (LOWER(filename) LIKE LOWER(?) OR LOWER(key) LIKE LOWER(?))
+                 ORDER BY is_favorite DESC, created_at DESC 
+                 LIMIT ?''',
+              (user_id, f'%{query}%', f'%{query}%', limit))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -599,12 +602,13 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = search_files(user_id, query)
         
         if not results:
-            await update.message.reply_text(f"❌ По запросу «{query}» ничего не найдено.")
+            await update.message.reply_text(f"❌ По запросу «{query}» ничего не найдено.\n\nПопробуйте поискать по названию файла или по ключу.")
             return
         
         context.user_data['search_results'] = results
         text = f"🔎 *Результаты поиска по запросу «{query}»:*\nНайдено {len(results)} файлов."
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=search_results_keyboard(results, 0))
+        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text("📋 Список найденных файлов:", reply_markup=search_results_keyboard(results, 0))
     except Exception as e:
         logger.error(f"Ошибка в search_command: {e}")
         await send_error_to_admin(f"Ошибка в search_command:\n{traceback.format_exc()}")
@@ -1057,7 +1061,7 @@ async def process_folder_creation(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"✅ Папка «{text}» создана!")
         await my_files(update, context, parent_id, files_page)
     except Exception as e:
-        logger.error(f"Ошибка в process_folder_creation: {e}")
+        logger.error(f"Ошибка在 process_folder_creation: {e}")
         await send_error_to_admin(f"Ошибка в process_folder_creation:\n{traceback.format_exc()}")
 
 # --- Удаление папки ---
@@ -1165,7 +1169,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("🗑 Введите ключ файла (только ключ):")
             await query.answer()
         elif data == "search_prompt":
-            await query.message.reply_text("🔎 Введите текст для поиска командой: `/search текст`", parse_mode="Markdown")
+            context.user_data['waiting_for'] = 'search_query'
+            await query.message.reply_text("🔎 Введите текст для поиска (можно искать по названию файла или по ключу):")
             await query.answer()
         elif data == "favorites":
             await favorites(update, context, 0)
@@ -1338,6 +1343,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if context.user_data.get('rename_file_key') is not None:
             await rename_file_process(update, context)
+            return
+        
+        if context.user_data.get('waiting_for') == 'search_query':
+            context.user_data['waiting_for'] = None
+            query = text
+            user_id = update.effective_user.id
+            results = search_files(user_id, query)
+            
+            if not results:
+                await update.message.reply_text(f"❌ По запросу «{query}» ничего не найдено.\n\nПопробуйте поискать по названию файла или по ключу.")
+                return
+            
+            context.user_data['search_results'] = results
+            text_msg = f"🔎 *Результаты поиска по запросу «{query}»:*\nНайдено {len(results)} файлов."
+            await update.message.reply_text(text_msg, parse_mode="Markdown")
+            await update.message.reply_text("📋 Список найденных файлов:", reply_markup=search_results_keyboard(results, 0))
             return
         
         if context.user_data.get('pending_file_key'):
