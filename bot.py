@@ -124,6 +124,10 @@ def init_db():
         username TEXT,
         last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_files_user_folder ON files(user_id, folder_id)')
     conn.commit()
     conn.close()
     logger.info("База данных инициализирована")
@@ -558,8 +562,7 @@ async def check_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- Обработчики (остальной код без изменений, но он очень длинный. 
- # --- Обработчики ---
+# --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message:
@@ -1245,6 +1248,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_reply_markup(reply_markup=search_results_keyboard(results, page))
             await query.answer()
         elif data == "main_menu":
+            context.user_data['current_folder'] = 0
             await query.message.edit_text("👋 Главное меню\n\nИспользуйте кнопки ниже:", reply_markup=main_keyboard())
             await query.answer()
         elif data == "about":
@@ -1255,6 +1259,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text(HELP_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]))
             await query.answer()
         elif data == "my_files_root":
+            context.user_data['current_folder'] = 0
             await my_files(update, context, 0, 0)
         elif data.startswith("my_files_back_"):
             try:
@@ -1265,12 +1270,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 row = c.fetchone()
                 conn.close()
                 parent_id = row[0] if row else 0
+                context.user_data['current_folder'] = parent_id
                 await my_files(update, context, parent_id, 0)
             except:
                 await query.answer("Ошибка", show_alert=True)
         elif data.startswith("my_files_"):
             try:
                 parent_id = int(data.split("_")[2])
+                context.user_data['current_folder'] = parent_id
                 await my_files(update, context, parent_id, 0)
             except:
                 await query.answer("Ошибка", show_alert=True)
@@ -1589,7 +1596,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия с поиском, переименованием, избранным и московским временем)")
+    logger.info("Бот запущен (полная версия с исправленным сохранением файлов в папки)")
     app.run_polling()
 
 if __name__ == "__main__":
