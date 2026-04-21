@@ -646,7 +646,6 @@ async def _save_file(message, context, temp, password=None):
     
     try:
         key = str(uuid4())[:8]
-        # Формируем подпись для канала с ключом в отдельной строке
         caption = f"📁 Файл от {user_first_name}\n🔑 Ключ: {key}"
         if expires_at:
             expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
@@ -1088,7 +1087,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await unlock_file(update, context, key)
         elif data.startswith("copy_"):
             key = data[5:]
-            await query.answer(f"Ключ: {key}", show_alert=True)
+            await query.message.reply_text(f"📌 *Ключ файла:*\n`{key}`\n\nНажмите на ключ, чтобы скопировать.", parse_mode="Markdown")
+            await query.answer()
         elif data.startswith("delete_"):
             key = data[7:]
             info = get_file_info(key)
