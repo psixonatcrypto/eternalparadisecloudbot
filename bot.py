@@ -20,6 +20,9 @@ DB_NAME = "files.db"
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
+# Часовой пояс для отображения (Москва UTC+3)
+TIMEZONE_OFFSET = 3  # часов
+
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 
 Мы — игровое сообщество, объединяющее любителей разных игр.
@@ -69,6 +72,13 @@ async def send_error_to_admin(error_text):
             await bot_instance.send_message(chat_id=ADMIN_ID, text=f"⚠️ *Ошибка в боте:*\n\n```\n{error_text[:3000]}\n```", parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Не удалось отправить ошибку админу: {e}")
+
+def format_datetime_for_user(dt_utc):
+    """Преобразует UTC время в московское (UTC+3) для отображения"""
+    if dt_utc:
+        local_dt = dt_utc + datetime.timedelta(hours=TIMEZONE_OFFSET)
+        return local_dt.strftime("%d.%m.%Y %H:%M")
+    return None
 
 # --- Веб-сервер ---
 flask_app = Flask(__name__)
@@ -354,7 +364,8 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
         star = "⭐️ " if is_favorite else ""
         if expires_at:
             try:
-                expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+                expires_dt = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
+                expires_str = format_datetime_for_user(expires_dt)
                 display_name = f"{star}📄 {filename[:15]} (до {expires_str}) 👁 {downloads_count}"
             except:
                 display_name = f"{star}📄 {filename[:20]} 👁 {downloads_count}"
@@ -409,7 +420,8 @@ def favorites_keyboard(user_id, page=0, limit=10):
     for key, filename, created_at, expires_at, downloads_count in files:
         if expires_at:
             try:
-                expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+                expires_dt = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
+                expires_str = format_datetime_for_user(expires_dt)
                 display_name = f"📄 {filename[:20]} (до {expires_str}) 👁 {downloads_count}"
             except:
                 display_name = f"📄 {filename[:25]}"
@@ -437,7 +449,8 @@ def search_results_keyboard(files, page=0, limit=10):
         star = "⭐️ " if is_favorite else ""
         if expires_at:
             try:
-                expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+                expires_dt = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
+                expires_str = format_datetime_for_user(expires_dt)
                 display_name = f"{star}📄 {filename[:20]} (до {expires_str}) 👁 {downloads_count}"
             except:
                 display_name = f"{star}📄 {filename[:25]}"
@@ -469,7 +482,7 @@ async def send_file_by_info(chat_id, info, key, bot):
     else:
         await bot.send_document(chat_id=chat_id, document=info["file_id"], filename=info["filename"], caption=f"👁 Скачиваний: {info['downloads_count']}")
 
-# --- Автоматическое удаление просроченных файлов ---
+# --- Автоматическое удаление просроченных файлов (проверка каждые 10 минут) ---
 async def check_expired_files(app):
     while True:
         try:
@@ -484,10 +497,12 @@ async def check_expired_files(app):
                         logger.info(f"Автоудаление: {filename} (ключ {key}) удалён")
                     except Exception as e:
                         logger.error(f"Не удалось удалить {filename}: {e}")
+            else:
+                logger.debug("Просроченных файлов не найдено")
         except Exception as e:
             logger.error(f"Ошибка при проверке просроченных файлов: {e}")
             await send_error_to_admin(f"Ошибка при проверке просроченных файлов:\n{traceback.format_exc()}")
-        await asyncio.sleep(3600)
+        await asyncio.sleep(600)  # 10 минут (было 3600)
 
 # --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -788,10 +803,13 @@ async def _save_file(message, context, temp, password=None):
     
     try:
         key = str(uuid4())[:8]
+        
+        # Формируем подпись для канала с московским временем
         caption = f"📁 Файл от {user_first_name}\n🔑 Ключ: {key}"
         if expires_at:
-            expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
-            caption += f"\n⏰ Удалить: {expires_str}"
+            expires_utc = datetime.datetime.fromisoformat(expires_at)
+            expires_local = format_datetime_for_user(expires_utc)
+            caption += f"\n⏰ Удалить: {expires_local} (МСК)"
         
         if media_type == "photo":
             sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption)
@@ -1515,7 +1533,7 @@ def main():
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия с поиском, переименованием и избранным)")
+    logger.info("Бот запущен (полная версия с поиском, переименованием, избранным и московским временем)")
     app.run_polling()
 
 if __name__ == "__main__":
