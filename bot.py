@@ -630,7 +630,7 @@ async def final_save_file_from_text(update: Update, context: ContextTypes.DEFAUL
         
         await _save_file(message, context, temp, password)
     except Exception as e:
-        logger.error(f"Ошибка в final_save_file_from_text: {e}")
+        logger.error(f"Ошибка在 final_save_file_from_text: {e}")
         await send_error_to_admin(f"Ошибка в final_save_file_from_text:\n{traceback.format_exc()}")
 
 async def _save_file(message, context, temp, password=None):
@@ -652,7 +652,7 @@ async def _save_file(message, context, temp, password=None):
             expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
             caption += f"\n⏰ Удалить: {expires_str}"
         
-        # Отправляем файл в канал
+        # Отправляем файл в канал (без отдельного сообщения с ключом)
         if media_type == "photo":
             sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption)
         elif media_type == "video":
@@ -663,13 +663,6 @@ async def _save_file(message, context, temp, password=None):
             sent = await context.bot.send_voice(chat_id=CHANNEL_ID, voice=file_id, caption=caption)
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
-        
-        # Отправляем отдельное сообщение с копируемым ключом (для админа)
-        await context.bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=f"📌 *Ключ:* `<code>{key}</code>",
-            parse_mode="HTML"
-        )
 
         save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
@@ -1096,7 +1089,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await unlock_file(update, context, key)
         elif data.startswith("copy_"):
             key = data[5:]
-            await query.answer(f"Ключ: {key}", show_alert=True)
+            await query.answer(key, show_alert=True)  # Только ключ, без лишнего текста
         elif data.startswith("delete_"):
             key = data[7:]
             info = get_file_info(key)
