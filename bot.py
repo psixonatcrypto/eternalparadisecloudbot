@@ -47,8 +47,10 @@ HELP_TEXT = """📌 *Как пользоваться:*
 3. Нажмите «Мои файлы» – увидите папки и файлы.
 4. Нажмите на файл – откроется меню управления (для своих файлов).
 5. Чтобы удалить папку, откройте её и нажмите «🗑 Удалить эту папку».
+6. Используйте /search <текст> для поиска файлов.
+7. Добавляйте файлы в избранное ⭐️
 
-Команды: /get <ключ>, /delete <ключ>
+Команды: /get <ключ>, /delete <ключ>, /search <текст>
 
 По всем вопросам: [Eternal Paradise Support](https://t.me/Eternal_paradise_supbot)"""
 # =================================
@@ -81,7 +83,7 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Инициализация БД ---
+# --- Инициализация БД (добавлено поле is_favorite) ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -99,6 +101,7 @@ def init_db():
         downloads_count INTEGER DEFAULT 0,
         failed_attempts INTEGER DEFAULT 0,
         blocked_until TIMESTAMP,
+        is_favorite INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS folders (
@@ -125,18 +128,18 @@ def check_password(password, password_hash):
     return hash_password(password) == password_hash
 
 # --- Функции БД ---
-def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None, expires_at=None):
+def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None, expires_at=None, is_favorite=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at))
+    c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at, is_favorite))
     conn.commit()
     conn.close()
 
 def get_file_info(key):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at, downloads_count, failed_attempts, blocked_until, folder_id, user_id FROM files WHERE key = ?', (key,))
+    c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at, downloads_count, failed_attempts, blocked_until, folder_id, user_id, is_favorite FROM files WHERE key = ?', (key,))
     row = c.fetchone()
     conn.close()
     if row:
@@ -144,7 +147,8 @@ def get_file_info(key):
             "file_id": row[0], "filename": row[1], "media_type": row[2],
             "message_id": row[3], "password_hash": row[4], "expires_at": row[5],
             "downloads_count": row[6] or 0, "failed_attempts": row[7] or 0,
-            "blocked_until": row[8], "folder_id": row[9] or 0, "user_id": row[10]
+            "blocked_until": row[8], "folder_id": row[9] or 0, "user_id": row[10],
+            "is_favorite": row[11] or 0
         }
     return None
 
@@ -228,7 +232,7 @@ def get_user_folders(user_id, parent_id=0):
 def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT key, filename, created_at, expires_at, downloads_count FROM files WHERE user_id = ? AND folder_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    c.execute('SELECT key, filename, created_at, expires_at, downloads_count, is_favorite FROM files WHERE user_id = ? AND folder_id = ? ORDER BY is_favorite DESC, created_at DESC LIMIT ? OFFSET ?',
               (user_id, folder_id, limit, offset))
     rows = c.fetchall()
     c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND folder_id = ?', (user_id, folder_id))
@@ -278,6 +282,33 @@ def update_file_folder(key, target_folder_id, user_id):
     conn.commit()
     conn.close()
 
+def rename_file(key, new_filename, user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE files SET filename = ? WHERE key = ? AND user_id = ?', (new_filename, key, user_id))
+    conn.commit()
+    conn.close()
+
+def toggle_favorite(key, user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('UPDATE files SET is_favorite = CASE WHEN is_favorite = 1 THEN 0 ELSE 1 END WHERE key = ? AND user_id = ?', (key, user_id))
+    conn.commit()
+    conn.close()
+    c.execute('SELECT is_favorite FROM files WHERE key = ?', (key,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def search_files(user_id, query, limit=20):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT key, filename, created_at, expires_at, downloads_count, is_favorite FROM files WHERE user_id = ? AND filename LIKE ? ORDER BY is_favorite DESC, created_at DESC LIMIT ?',
+              (user_id, f'%{query}%', limit))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
 # --- Клавиатуры ---
 def main_keyboard():
     keyboard = [
@@ -285,13 +316,15 @@ def main_keyboard():
         [InlineKeyboardButton("🔍 Получить по ключу", callback_data="get_prompt")],
         [InlineKeyboardButton("❌ Удалить по ключу", callback_data="delete_prompt")],
         [InlineKeyboardButton("📁 Мои файлы", callback_data="my_files_root")],
+        [InlineKeyboardButton("⭐️ Избранное", callback_data="favorites")],
+        [InlineKeyboardButton("🔎 Поиск", callback_data="search_prompt")],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
         [InlineKeyboardButton("🌐 О проекте", callback_data="about")],
         [InlineKeyboardButton("⚠️ Жалоба", callback_data="complaint")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def owner_file_actions_keyboard(key, has_password=False, folder_id=0):
+def owner_file_actions_keyboard(key, has_password=False, folder_id=0, is_favorite=False):
     deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
     keyboard = []
     if has_password:
@@ -299,6 +332,11 @@ def owner_file_actions_keyboard(key, has_password=False, folder_id=0):
     keyboard.append([InlineKeyboardButton("📥 Скачать", url=deep_link)])
     keyboard.append([InlineKeyboardButton("🔗 Ссылка для друга", callback_data=f"share_link_{key}")])
     keyboard.append([InlineKeyboardButton("📋 Ключ", callback_data=f"copy_{key}")])
+    keyboard.append([InlineKeyboardButton("✏️ Переименовать", callback_data=f"rename_{key}")])
+    if is_favorite:
+        keyboard.append([InlineKeyboardButton("🗑 Из избранного", callback_data=f"unfavorite_{key}")])
+    else:
+        keyboard.append([InlineKeyboardButton("⭐️ В избранное", callback_data=f"favorite_{key}")])
     keyboard.append([InlineKeyboardButton("📁 Перенести в папку", callback_data=f"move_file_{key}_{folder_id}")])
     keyboard.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")])
     return InlineKeyboardMarkup(keyboard)
@@ -311,15 +349,16 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     for folder_id, folder_name in folders:
         keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"open_folder_{folder_id}_{files_page}")])
     
-    for key, filename, created_at, expires_at, downloads_count in files:
+    for key, filename, created_at, expires_at, downloads_count, is_favorite in files:
+        star = "⭐️ " if is_favorite else ""
         if expires_at:
             try:
                 expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
-                display_name = f"📄 {filename[:15]} (до {expires_str}) 👁 {downloads_count}"
+                display_name = f"{star}📄 {filename[:15]} (до {expires_str}) 👁 {downloads_count}"
             except:
-                display_name = f"📄 {filename[:20]} 👁 {downloads_count}"
+                display_name = f"{star}📄 {filename[:20]} 👁 {downloads_count}"
         else:
-            display_name = f"📄 {filename[:20]} 👁 {downloads_count}"
+            display_name = f"{star}📄 {filename[:20]} 👁 {downloads_count}"
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_{parent_id}_{files_page}")])
     
     nav_buttons = []
@@ -353,6 +392,68 @@ def storage_keyboard():
         [InlineKeyboardButton("♾ Навсегда", callback_data="period_forever")],
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel_upload")]
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+def favorites_keyboard(user_id, page=0, limit=10):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT key, filename, created_at, expires_at, downloads_count FROM files WHERE user_id = ? AND is_favorite = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?',
+              (user_id, limit, page * limit))
+    files = c.fetchall()
+    c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND is_favorite = 1', (user_id,))
+    total = c.fetchone()[0]
+    conn.close()
+    
+    keyboard = []
+    for key, filename, created_at, expires_at, downloads_count in files:
+        if expires_at:
+            try:
+                expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+                display_name = f"📄 {filename[:20]} (до {expires_str}) 👁 {downloads_count}"
+            except:
+                display_name = f"📄 {filename[:25]}"
+        else:
+            display_name = f"📄 {filename[:25]}"
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_0_0")])
+    
+    total_pages = (total + limit - 1) // limit
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"favorites_page_{page-1}"))
+    if page + 1 < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"favorites_page_{page+1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(keyboard)
+
+def search_results_keyboard(files, page=0, limit=10):
+    keyboard = []
+    start = page * limit
+    end = start + limit
+    for key, filename, created_at, expires_at, downloads_count, is_favorite in files[start:end]:
+        star = "⭐️ " if is_favorite else ""
+        if expires_at:
+            try:
+                expires_str = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S").strftime("%d.%m.%Y")
+                display_name = f"{star}📄 {filename[:20]} (до {expires_str}) 👁 {downloads_count}"
+            except:
+                display_name = f"{star}📄 {filename[:25]}"
+        else:
+            display_name = f"{star}📄 {filename[:25]}"
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_0_0")])
+    
+    total_pages = (len(files) + limit - 1) // limit
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"search_page_{page-1}"))
+    if page + 1 < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"search_page_{page+1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    keyboard.append([InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(keyboard)
 
 async def send_file_by_info(chat_id, info, key, bot):
@@ -468,6 +569,45 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
     except Exception as e:
         logger.error(f"Ошибка в my_files: {e}")
         await send_error_to_admin(f"Ошибка в my_files:\n{traceback.format_exc()}")
+
+async def favorites(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
+    try:
+        query = update.callback_query
+        user_id = update.effective_user.id
+        
+        text = "⭐️ *Ваши избранные файлы:*"
+        keyboard = favorites_keyboard(user_id, page)
+        if query:
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+            await query.answer()
+        else:
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка в favorites: {e}")
+        await send_error_to_admin(f"Ошибка в favorites:\n{traceback.format_exc()}")
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not update.message:
+            return
+        if not context.args:
+            await update.message.reply_text("🔎 Укажите текст для поиска: `/search текст`", parse_mode="Markdown")
+            return
+        
+        query = " ".join(context.args)
+        user_id = update.effective_user.id
+        results = search_files(user_id, query)
+        
+        if not results:
+            await update.message.reply_text(f"❌ По запросу «{query}» ничего не найдено.")
+            return
+        
+        context.user_data['search_results'] = results
+        text = f"🔎 *Результаты поиска по запросу «{query}»:*\nНайдено {len(results)} файлов."
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=search_results_keyboard(results, 0))
+    except Exception as e:
+        logger.error(f"Ошибка в search_command: {e}")
+        await send_error_to_admin(f"Ошибка в search_command:\n{traceback.format_exc()}")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -662,7 +802,6 @@ async def _save_file(message, context, temp, password=None):
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
 
-        # Отправляем отдельное сообщение с ключом в канал (для копирования)
         await context.bot.send_message(
             chat_id=CHANNEL_ID,
             text=f"🔑 *Ключ для этого файла:* `{key}`\n\nНажмите на ключ, чтобы скопировать.",
@@ -703,7 +842,7 @@ async def unlock_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key: s
         info = get_file_info(key)
         if info:
             has_password = info.get("password_hash") is not None
-            keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0))
+            keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0), info.get("is_favorite", 0))
             await query.message.edit_reply_markup(reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка в unlock_file: {e}")
@@ -723,12 +862,13 @@ async def open_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, par
         
         if is_owner:
             has_password = info.get("password_hash") is not None
-            keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0))
+            keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0), info.get("is_favorite", 0))
             await query.message.reply_text(
                 f"📄 *{info['filename']}*\n\n"
                 f"📌 Ключ: `{key}`\n"
                 f"👁 Скачиваний: {info['downloads_count']}\n"
-                f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n\n"
+                f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n"
+                f"⭐️ Избранное: {'Да' if info.get('is_favorite') else 'Нет'}\n\n"
                 f"Выберите действие:",
                 parse_mode="Markdown",
                 reply_markup=keyboard
@@ -748,6 +888,56 @@ async def open_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, par
     except Exception as e:
         logger.error(f"Ошибка в open_file: {e}")
         await send_error_to_admin(f"Ошибка в open_file:\n{traceback.format_exc()}")
+
+async def rename_file_start(update: Update, context: ContextTypes.DEFAULT_TYPE, key):
+    query = update.callback_query
+    context.user_data['rename_file_key'] = key
+    await query.message.reply_text("✏️ Введите новое название для файла:")
+    await query.answer()
+
+async def rename_file_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_name = update.message.text.strip()
+    key = context.user_data.get('rename_file_key')
+    if not key:
+        await update.message.reply_text("❌ Ошибка: файл не найден.")
+        return
+    
+    user_id = update.effective_user.id
+    rename_file(key, new_name, user_id)
+    context.user_data.pop('rename_file_key', None)
+    
+    await update.message.reply_text(f"✅ Файл переименован в «{new_name}»")
+    
+    info = get_file_info(key)
+    if info:
+        has_password = info.get("password_hash") is not None
+        keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0), info.get("is_favorite", 0))
+        await update.message.reply_text(
+            f"📄 *{new_name}*\n\n"
+            f"📌 Ключ: `{key}`\n"
+            f"👁 Скачиваний: {info['downloads_count']}\n"
+            f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n"
+            f"⭐️ Избранное: {'Да' if info.get('is_favorite') else 'Нет'}\n\n"
+            f"Выберите действие:",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+
+async def favorite_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    is_favorite = toggle_favorite(key, user_id)
+    
+    info = get_file_info(key)
+    if info:
+        has_password = info.get("password_hash") is not None
+        keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0), is_favorite)
+        await query.message.edit_reply_markup(reply_markup=keyboard)
+    
+    if is_favorite:
+        await query.answer("⭐️ Файл добавлен в избранное!", show_alert=True)
+    else:
+        await query.answer("🗑 Файл удалён из избранного!", show_alert=True)
 
 async def share_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, key: str):
     try:
@@ -783,13 +973,14 @@ async def back_to_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, 
             return
         
         has_password = info.get("password_hash") is not None
-        keyboard = owner_file_actions_keyboard(key, has_password, folder_id)
+        keyboard = owner_file_actions_keyboard(key, has_password, folder_id, info.get("is_favorite", 0))
         
         await query.message.edit_text(
             f"📄 *{info['filename']}*\n\n"
             f"📌 Ключ: `{key}`\n"
             f"👁 Скачиваний: {info['downloads_count']}\n"
-            f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n\n"
+            f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n"
+            f"⭐️ Избранное: {'Да' if info.get('is_favorite') else 'Нет'}\n\n"
             f"Выберите действие:",
             parse_mode="Markdown",
             reply_markup=keyboard
@@ -973,6 +1164,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['waiting_for'] = 'delete_key'
             await query.message.reply_text("🗑 Введите ключ файла (только ключ):")
             await query.answer()
+        elif data == "search_prompt":
+            await query.message.reply_text("🔎 Введите текст для поиска командой: `/search текст`", parse_mode="Markdown")
+            await query.answer()
+        elif data == "favorites":
+            await favorites(update, context, 0)
+        elif data.startswith("favorites_page_"):
+            page = int(data.split("_")[2])
+            await favorites(update, context, page)
+        elif data.startswith("search_page_"):
+            page = int(data.split("_")[2])
+            results = context.user_data.get('search_results', [])
+            await query.message.edit_reply_markup(reply_markup=search_results_keyboard(results, page))
+            await query.answer()
         elif data == "main_menu":
             await query.message.edit_text("👋 Главное меню\n\nИспользуйте кнопки ниже:", reply_markup=main_keyboard())
             await query.answer()
@@ -1067,6 +1271,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
         elif data == "final_no_pwd":
             await final_save_file_from_callback(update, context, password=None)
+        elif data.startswith("rename_"):
+            key = data[7:]
+            await rename_file_start(update, context, key)
+        elif data.startswith("favorite_"):
+            key = data[9:]
+            await favorite_file(update, context, key)
+        elif data.startswith("unfavorite_"):
+            key = data[11:]
+            await favorite_file(update, context, key)
         elif data.startswith("share_link_"):
             key = data[11:]
             await share_file_link(update, context, key)
@@ -1121,6 +1334,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if context.user_data.get('new_folder_parent') is not None:
             await process_folder_creation(update, context)
+            return
+        
+        if context.user_data.get('rename_file_key') is not None:
+            await rename_file_process(update, context)
             return
         
         if context.user_data.get('pending_file_key'):
@@ -1280,13 +1497,14 @@ def main():
     app.add_handler(CommandHandler("delkey", delkey_command))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("search", search_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE,
         handle_file
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
-    logger.info("Бот запущен (полная версия с управлением файлами)")
+    logger.info("Бот запущен (полная версия с поиском, переименованием и избранным)")
     app.run_polling()
 
 if __name__ == "__main__":
