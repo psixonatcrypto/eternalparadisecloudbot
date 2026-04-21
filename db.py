@@ -58,6 +58,7 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_user_folder ON files(user_id, folder_id)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_files_is_favorite ON files(is_favorite)')
     logger.info("База данных инициализирована")
 
 # --- Функции работы с файлами ---
@@ -68,6 +69,7 @@ def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user
 
 def get_file_info(key):
     with Database() as c:
+        # Выбираем только нужные поля
         c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at, downloads_count, failed_attempts, blocked_until, folder_id, user_id, is_favorite FROM files WHERE key = ?', (key,))
         row = c.fetchone()
     if row:
@@ -106,17 +108,16 @@ def block_file_access(key, minutes=60):
 
 def is_file_blocked(key):
     with Database() as c:
-        c.execute('SELECT blocked_until FROM files WHERE key = ?', (key,))
+        # Используем SELECT 1 вместо загрузки всего поля
+        c.execute('SELECT 1 FROM files WHERE key = ? AND blocked_until > datetime("now") LIMIT 1', (key,))
         row = c.fetchone()
-    if row and row[0]:
-        blocked_until = datetime.datetime.fromisoformat(row[0])
-        return blocked_until > datetime.datetime.now()
-    return False
+        return row is not None
 
-def get_expired_files():
+def get_expired_files(batch_size=100):
+    """Возвращает просроченные файлы порциями (по умолчанию 100 за раз)"""
     now_utc = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with Database() as c:
-        c.execute('SELECT key, message_id, chat_id, filename, expires_at FROM files WHERE expires_at IS NOT NULL AND expires_at <= ?', (now_utc,))
+        c.execute('SELECT key, message_id, chat_id, filename, expires_at FROM files WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT ?', (now_utc, batch_size))
         rows = c.fetchall()
     if rows:
         logger.info(f"Найдено просроченных файлов: {len(rows)} (проверка в {now_utc} UTC)")
@@ -134,10 +135,22 @@ def rename_file(key, new_filename, user_id):
 
 def toggle_favorite(key, user_id):
     with Database() as c:
-        c.execute('UPDATE files SET is_favorite = CASE WHEN is_favorite = 1 THEN 0 ELSE 1 END WHERE key = ? AND user_id = ?', (key, user_id))
-        c.execute('SELECT is_favorite FROM files WHERE key = ?', (key,))
-        row = c.fetchone()
-        return row[0] if row else 0
+        # Используем RETURNING для получения нового значения (SQLite 3.35+)
+        try:
+            c.execute('''
+                UPDATE files SET is_favorite = CASE WHEN is_favorite = 1 THEN 0 ELSE 1 END 
+                WHERE key = ? AND user_id = ? 
+                RETURNING is_favorite
+            ''', (key, user_id))
+            row = c.fetchone()
+            is_favorite = row[0] if row else 0
+        except sqlite3.OperationalError:
+            # Если RETURNING не поддерживается (старая версия SQLite), делаем два запроса
+            c.execute('UPDATE files SET is_favorite = CASE WHEN is_favorite = 1 THEN 0 ELSE 1 END WHERE key = ? AND user_id = ?', (key, user_id))
+            c.execute('SELECT is_favorite FROM files WHERE key = ?', (key,))
+            row = c.fetchone()
+            is_favorite = row[0] if row else 0
+        return is_favorite
 
 def search_files(user_id, query, limit=20):
     with Database() as c:
@@ -162,35 +175,41 @@ def get_user_folders(user_id, parent_id=0):
 
 def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
     with Database() as c:
-        c.execute('SELECT key, filename, created_at, expires_at, downloads_count, is_favorite FROM files WHERE user_id = ? AND folder_id = ? ORDER BY is_favorite DESC, created_at DESC LIMIT ? OFFSET ?',
-                  (user_id, folder_id, limit, offset))
+        # Используем оконную функцию COUNT(*) OVER() для получения общего количества за один запрос
+        c.execute('''
+            SELECT key, filename, created_at, expires_at, downloads_count, is_favorite, COUNT(*) OVER() as total_count
+            FROM files 
+            WHERE user_id = ? AND folder_id = ? 
+            ORDER BY is_favorite DESC, created_at DESC 
+            LIMIT ? OFFSET ?
+        ''', (user_id, folder_id, limit, offset))
         rows = c.fetchall()
-        c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND folder_id = ?', (user_id, folder_id))
-        total = c.fetchone()[0]
+        total = rows[0][6] if rows else 0
+        # Убираем total_count из результатов
+        rows = [row[:6] for row in rows]
         return rows, total
 
 def delete_folder_and_files(folder_id, user_id):
-    """Удаляет папку и все файлы внутри неё. Возвращает (files_in_folder, subfolders) для последующего удаления из канала"""
+    """Удаляет папку и все файлы внутри неё. Возвращает список файлов для удаления из канала"""
+    files_to_delete = []
     with Database() as c:
         # Получаем файлы в папке
         c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
-        files_in_folder = c.fetchall()
+        files_to_delete.extend(c.fetchall())
         # Удаляем файлы из БД
         c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
         # Получаем подпапки
         c.execute('SELECT id FROM folders WHERE parent_id = ? AND user_id = ?', (folder_id, user_id))
         subfolders = c.fetchall()
-        # Рекурсивно удаляем содержимое подпапок
         for sub_id, in subfolders:
+            # Рекурсивно собираем файлы из подпапок
             c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
-            sub_files = c.fetchall()
+            files_to_delete.extend(c.fetchall())
             c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
             c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (sub_id, user_id))
-            # Добавляем файлы подпапок в общий список
-            files_in_folder.extend(sub_files)
         # Удаляем саму папку
         c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
-        return files_in_folder, subfolders
+        return files_to_delete
 
 # --- Функции работы с пользователями ---
 def save_user(user_id, first_name, username):
