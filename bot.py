@@ -21,7 +21,7 @@ ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
 # Часовой пояс для отображения (Москва UTC+3)
-TIMEZONE_OFFSET = 3  # часов
+TIMEZONE_OFFSET = 3
 
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 
@@ -74,7 +74,6 @@ async def send_error_to_admin(error_text):
             logger.error(f"Не удалось отправить ошибку админу: {e}")
 
 def format_datetime_for_user(dt_utc):
-    """Преобразует UTC время в московское (UTC+3) для отображения"""
     if dt_utc:
         local_dt = dt_utc + datetime.timedelta(hours=TIMEZONE_OFFSET)
         return local_dt.strftime("%d.%m.%Y %H:%M")
@@ -216,9 +215,13 @@ def is_file_blocked(key):
 def get_expired_files():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT key, message_id, chat_id, filename FROM files WHERE expires_at IS NOT NULL AND expires_at <= datetime("now")')
+    c.execute('SELECT key, message_id, chat_id, filename, expires_at FROM files WHERE expires_at IS NOT NULL AND expires_at <= datetime("now")')
     rows = c.fetchall()
     conn.close()
+    if rows:
+        logger.info(f"Найдено просроченных файлов: {len(rows)}")
+        for row in rows:
+            logger.info(f"Просрочен: {row[3]} | expires_at: {row[4]}")
     return rows
 
 def create_folder(user_id, name, parent_id=0):
@@ -482,14 +485,14 @@ async def send_file_by_info(chat_id, info, key, bot):
     else:
         await bot.send_document(chat_id=chat_id, document=info["file_id"], filename=info["filename"], caption=f"👁 Скачиваний: {info['downloads_count']}")
 
-# --- Автоматическое удаление просроченных файлов (проверка каждые 10 минут) ---
+# --- Автоматическое удаление просроченных файлов (проверка каждые 5 минут) ---
 async def check_expired_files(app):
     while True:
         try:
             expired = get_expired_files()
             if expired:
                 logger.info(f"Найдено {len(expired)} просроченных файлов")
-                for key, message_id, chat_id, filename in expired:
+                for key, message_id, chat_id, filename, expires_at in expired:
                     try:
                         await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
                         logger.info(f"Удалено сообщение {message_id} из канала для файла {filename}")
@@ -498,11 +501,40 @@ async def check_expired_files(app):
                     except Exception as e:
                         logger.error(f"Не удалось удалить {filename}: {e}")
             else:
-                logger.debug("Просроченных файлов не найдено")
+                logger.info("Просроченных файлов не найдено")
         except Exception as e:
             logger.error(f"Ошибка при проверке просроченных файлов: {e}")
             await send_error_to_admin(f"Ошибка при проверке просроченных файлов:\n{traceback.format_exc()}")
-        await asyncio.sleep(600)  # 10 минут (было 3600)
+        await asyncio.sleep(300)  # 5 минут
+
+# --- Команда для принудительной проверки ---
+async def check_expired_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для админа: принудительная проверка и удаление просроченных файлов"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    
+    expired = get_expired_files()
+    if not expired:
+        await update.message.reply_text("📭 Просроченных файлов не найдено.")
+        return
+    
+    await update.message.reply_text(f"🔍 Найдено {len(expired)} просроченных файлов. Удаляю...")
+    
+    deleted = 0
+    failed = 0
+    for key, message_id, chat_id, filename, expires_at in expired:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            delete_file_info(key)
+            deleted += 1
+            logger.info(f"Принудительно удалён {filename} (ключ {key})")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Ошибка удаления {key}: {e}")
+            failed += 1
+    
+    await update.message.reply_text(f"✅ Удалено {deleted} файлов.\n❌ Ошибок: {failed}")
 
 # --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -804,7 +836,6 @@ async def _save_file(message, context, temp, password=None):
     try:
         key = str(uuid4())[:8]
         
-        # Формируем подпись для канала с московским временем
         caption = f"📁 Файл от {user_first_name}\n🔑 Ключ: {key}"
         if expires_at:
             expires_utc = datetime.datetime.fromisoformat(expires_at)
@@ -1527,6 +1558,7 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("checkexpired", check_expired_now))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE,
