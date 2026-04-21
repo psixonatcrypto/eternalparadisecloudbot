@@ -316,8 +316,6 @@ def search_files(user_id, query, limit=20):
 def main_keyboard():
     keyboard = [
         [InlineKeyboardButton("📤 Загрузить файл", callback_data="upload")],
-        [InlineKeyboardButton("🔍 Получить по ключу", callback_data="get_prompt")],
-        [InlineKeyboardButton("❌ Удалить по ключу", callback_data="delete_prompt")],
         [InlineKeyboardButton("📁 Мои файлы", callback_data="my_files_root")],
         [InlineKeyboardButton("⭐️ Избранное", callback_data="favorites")],
         [InlineKeyboardButton("🔎 Поиск", callback_data="search_prompt")],
@@ -1061,7 +1059,7 @@ async def process_folder_creation(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"✅ Папка «{text}» создана!")
         await my_files(update, context, parent_id, files_page)
     except Exception as e:
-        logger.error(f"Ошибка在 process_folder_creation: {e}")
+        logger.error(f"Ошибка в process_folder_creation: {e}")
         await send_error_to_admin(f"Ошибка в process_folder_creation:\n{traceback.format_exc()}")
 
 # --- Удаление папки ---
@@ -1160,14 +1158,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if data == "upload":
             await query.answer("Просто отправьте мне любой файл")
-        elif data == "get_prompt":
-            context.user_data['waiting_for'] = 'get_key'
-            await query.message.reply_text("🔑 Введите ключ файла (только ключ):")
-            await query.answer()
-        elif data == "delete_prompt":
-            context.user_data['waiting_for'] = 'delete_key'
-            await query.message.reply_text("🗑 Введите ключ файла (только ключ):")
-            await query.answer()
         elif data == "search_prompt":
             context.user_data['waiting_for'] = 'search_query'
             await query.message.reply_text("🔎 Введите текст для поиска (можно искать по названию файла или по ключу):")
