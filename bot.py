@@ -20,7 +20,6 @@ DB_NAME = "files.db"
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
-# Текст для кнопки "О проекте"
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
 
 Мы — игровое сообщество, объединяющее любителей разных игр.
@@ -272,7 +271,7 @@ def get_new_users_count(days=0):
     conn.close()
     return count
 
-def move_file_to_folder(key, target_folder_id, user_id):
+def update_file_folder(key, target_folder_id, user_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('UPDATE files SET folder_id = ? WHERE key = ? AND user_id = ?', (target_folder_id, key, user_id))
@@ -826,7 +825,7 @@ async def move_file_to_folder(update: Update, context: ContextTypes.DEFAULT_TYPE
         query = update.callback_query
         user_id = update.effective_user.id
         
-        move_file_to_folder(key, target_folder_id, user_id)
+        update_file_folder(key, target_folder_id, user_id)
         
         context.user_data.pop('moving_file', None)
         
