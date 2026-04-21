@@ -662,6 +662,13 @@ async def _save_file(message, context, temp, password=None):
         else:
             sent = await context.bot.send_document(chat_id=CHANNEL_ID, document=file_id, caption=caption)
 
+        # Отправляем отдельное сообщение с ключом в канал (для копирования)
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=f"🔑 *Ключ для этого файла:* `{key}`\n\nНажмите на ключ, чтобы скопировать.",
+            parse_mode="Markdown"
+        )
+
         save_file_info(key, file_id, filename, CHANNEL_ID, sent.message_id, media_type, user_id, folder_id, password_hash=password_hash, expires_at=expires_at)
         deep_link = f"https://t.me/{BOT_USERNAME}?start={key}"
         
