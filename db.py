@@ -53,6 +53,7 @@ def init_db():
             username TEXT,
             last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+        # Индексы для ускорения запросов
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_folder_id ON files(folder_id)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at)')
@@ -169,17 +170,25 @@ def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
         return rows, total
 
 def delete_folder_and_files(folder_id, user_id):
+    """Удаляет папку и все файлы внутри неё. Возвращает (files_in_folder, subfolders) для последующего удаления из канала"""
     with Database() as c:
+        # Получаем файлы в папке
         c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
         files_in_folder = c.fetchall()
+        # Удаляем файлы из БД
         c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
+        # Получаем подпапки
         c.execute('SELECT id FROM folders WHERE parent_id = ? AND user_id = ?', (folder_id, user_id))
         subfolders = c.fetchall()
+        # Рекурсивно удаляем содержимое подпапок
         for sub_id, in subfolders:
             c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
             sub_files = c.fetchall()
             c.execute('DELETE FROM files WHERE folder_id = ? AND user_id = ?', (sub_id, user_id))
             c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (sub_id, user_id))
+            # Добавляем файлы подпапок в общий список
+            files_in_folder.extend(sub_files)
+        # Удаляем саму папку
         c.execute('DELETE FROM folders WHERE id = ? AND user_id = ?', (folder_id, user_id))
         return files_in_folder, subfolders
 
