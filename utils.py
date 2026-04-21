@@ -21,6 +21,7 @@ async def send_error_to_admin(error_text):
             logger.error(f"Не удалось отправить ошибку админу: {e}")
 
 def format_datetime_for_user(dt_utc):
+    """Преобразует UTC время в московское (UTC+3) для отображения"""
     if dt_utc:
         local_dt = dt_utc + datetime.timedelta(hours=TIMEZONE_OFFSET)
         return local_dt.strftime("%d.%m.%Y %H:%M")
