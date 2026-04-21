@@ -20,7 +20,6 @@ DB_NAME = "files.db"
 ADMIN_ID = 483977434
 BOT_USERNAME = "eternalparadisecloudbot"
 
-# Часовой пояс для отображения (Москва UTC+3)
 TIMEZONE_OFFSET = 3
 
 ABOUT_TEXT = """🌐 *О проекте Eternal Paradise*
@@ -215,11 +214,12 @@ def is_file_blocked(key):
 def get_expired_files():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT key, message_id, chat_id, filename, expires_at FROM files WHERE expires_at IS NOT NULL AND expires_at <= datetime("now")')
+    now_utc = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute('SELECT key, message_id, chat_id, filename, expires_at FROM files WHERE expires_at IS NOT NULL AND expires_at <= ?', (now_utc,))
     rows = c.fetchall()
     conn.close()
     if rows:
-        logger.info(f"Найдено просроченных файлов: {len(rows)}")
+        logger.info(f"Найдено просроченных файлов: {len(rows)} (проверка в {now_utc} UTC)")
         for row in rows:
             logger.info(f"Просрочен: {row[3]} | expires_at: {row[4]}")
     return rows
@@ -509,7 +509,6 @@ async def check_expired_files(app):
 
 # --- Команда для принудительной проверки ---
 async def check_expired_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для админа: принудительная проверка и удаление просроченных файлов"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Только администратор.")
         return
@@ -536,7 +535,31 @@ async def check_expired_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Удалено {deleted} файлов.\n❌ Ошибок: {failed}")
 
-# --- Обработчики ---
+# --- Команда для проверки времени ---
+async def check_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только администратор.")
+        return
+    
+    now_utc = datetime.datetime.now()
+    now_local = now_utc + datetime.timedelta(hours=TIMEZONE_OFFSET)
+    
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT key, filename, expires_at FROM files WHERE expires_at IS NOT NULL ORDER BY created_at DESC LIMIT 5')
+    rows = c.fetchall()
+    conn.close()
+    
+    text = f"🕐 *Серверное время (UTC):* `{now_utc.strftime('%Y-%m-%d %H:%M:%S')}`\n"
+    text += f"🕐 *Московское время:* `{now_local.strftime('%Y-%m-%d %H:%M:%S')}`\n\n"
+    text += "📁 *Последние 5 файлов с expires_at:*\n"
+    for key, filename, expires_at in rows:
+        text += f"• `{filename}` | expires: `{expires_at}`\n"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# --- Обработчики (остальной код без изменений, но он очень длинный. 
+ # --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message:
@@ -1559,6 +1582,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("checkexpired", check_expired_now))
+    app.add_handler(CommandHandler("checktime", check_time))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE,
