@@ -6,7 +6,11 @@ from flask import Flask
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from config import BOT_TOKEN
 from db import init_db, get_expired_files, delete_file_info
-from handlers import *
+from handlers import (
+    start, help_text, get_command, delete_command, delkey_command,
+    broadcast, stats, search_command, check_expired_now, check_time,
+    handle_file, handle_text, button_handler
+)
 from utils import set_bot_instance
 
 # Настройка логирования
