@@ -630,7 +630,7 @@ async def final_save_file_from_text(update: Update, context: ContextTypes.DEFAUL
         
         await _save_file(message, context, temp, password)
     except Exception as e:
-        logger.error(f"Ошибка在 final_save_file_from_text: {e}")
+        logger.error(f"Ошибка в final_save_file_from_text: {e}")
         await send_error_to_admin(f"Ошибка в final_save_file_from_text:\n{traceback.format_exc()}")
 
 async def _save_file(message, context, temp, password=None):
@@ -652,7 +652,7 @@ async def _save_file(message, context, temp, password=None):
             expires_str = datetime.datetime.fromisoformat(expires_at).strftime("%d.%m.%Y %H:%M")
             caption += f"\n⏰ Удалить: {expires_str}"
         
-        # Отправляем файл в канал (без отдельного сообщения с ключом)
+        # Отправляем файл в канал
         if media_type == "photo":
             sent = await context.bot.send_photo(chat_id=CHANNEL_ID, photo=file_id, caption=caption)
         elif media_type == "video":
@@ -1089,7 +1089,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await unlock_file(update, context, key)
         elif data.startswith("copy_"):
             key = data[5:]
-            await query.answer(key, show_alert=True)  # Только ключ, без лишнего текста
+            # Отправляем ключ в копируемом формате
+            await query.message.reply_text(
+                f"<code>{key}</code>",
+                parse_mode="HTML"
+            )
+            await query.answer("🔑 Ключ отправлен в чат, нажмите на него для копирования")
         elif data.startswith("delete_"):
             key = data[7:]
             info = get_file_info(key)
