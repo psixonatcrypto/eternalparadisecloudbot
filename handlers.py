@@ -234,7 +234,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(0.05)
         await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
     except Exception as e:
-        logger.error(f"Ошибка в broadcast: {e}")
+        logger.error(f"Ошибка在 broadcast: {e}")
         await send_error_to_admin(f"Ошибка в broadcast:\n{traceback.format_exc()}")
 
 async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -634,6 +634,16 @@ async def open_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, par
             await query.answer("❌ Файл не найден", show_alert=True)
             return
         
+        # Форматируем дату истечения
+        if info.get('expires_at'):
+            try:
+                expires_dt = datetime.datetime.fromisoformat(info['expires_at'])
+                expires_str = format_datetime_for_user(expires_dt)
+            except:
+                expires_str = info['expires_at']
+        else:
+            expires_str = "навсегда"
+        
         is_owner = (info.get("user_id") == user_id)
         
         if is_owner:
@@ -643,7 +653,7 @@ async def open_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, par
                 f"📄 *{info['filename']}*\n\n"
                 f"📌 Ключ: `{key}`\n"
                 f"👁 Скачиваний: {info['downloads_count']}\n"
-                f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n"
+                f"⏰ Срок хранения: {expires_str}\n"
                 f"⭐️ Избранное: {'Да' if info.get('is_favorite') else 'Нет'}\n\n"
                 f"Выберите действие:",
                 parse_mode="Markdown",
@@ -686,13 +696,23 @@ async def rename_file_process(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     info = get_file_info(key)
     if info:
+        # Форматируем дату истечения
+        if info.get('expires_at'):
+            try:
+                expires_dt = datetime.datetime.fromisoformat(info['expires_at'])
+                expires_str = format_datetime_for_user(expires_dt)
+            except:
+                expires_str = info['expires_at']
+        else:
+            expires_str = "навсегда"
+        
         has_password = info.get("password_hash") is not None
         keyboard = owner_file_actions_keyboard(key, has_password, info.get("folder_id", 0), info.get("is_favorite", 0))
         await update.message.reply_text(
             f"📄 *{new_name}*\n\n"
             f"📌 Ключ: `{key}`\n"
             f"👁 Скачиваний: {info['downloads_count']}\n"
-            f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n"
+            f"⏰ Срок хранения: {expires_str}\n"
             f"⭐️ Избранное: {'Да' if info.get('is_favorite') else 'Нет'}\n\n"
             f"Выберите действие:",
             parse_mode="Markdown",
@@ -748,6 +768,16 @@ async def back_to_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, 
             await query.answer("❌ Файл не найден", show_alert=True)
             return
         
+        # Форматируем дату истечения
+        if info.get('expires_at'):
+            try:
+                expires_dt = datetime.datetime.fromisoformat(info['expires_at'])
+                expires_str = format_datetime_for_user(expires_dt)
+            except:
+                expires_str = info['expires_at']
+        else:
+            expires_str = "навсегда"
+        
         has_password = info.get("password_hash") is not None
         keyboard = owner_file_actions_keyboard(key, has_password, folder_id, info.get("is_favorite", 0))
         
@@ -755,7 +785,7 @@ async def back_to_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, 
             f"📄 *{info['filename']}*\n\n"
             f"📌 Ключ: `{key}`\n"
             f"👁 Скачиваний: {info['downloads_count']}\n"
-            f"⏰ Срок хранения: {info['expires_at'] or 'навсегда'}\n"
+            f"⏰ Срок хранения: {expires_str}\n"
             f"⭐️ Избранное: {'Да' if info.get('is_favorite') else 'Нет'}\n\n"
             f"Выберите действие:",
             parse_mode="Markdown",
@@ -875,14 +905,6 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
                 logger.info(f"Удалён файл {key} из канала")
             except Exception as e:
                 logger.error(f"Не удалось удалить файл {key}: {e}")
-        
-        for sub_id, in subfolders:
-            sub_files, _ = delete_folder_and_files(sub_id, user_id)
-            for key, message_id in sub_files:
-                try:
-                    await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=message_id)
-                except:
-                    pass
         
         await query.answer(f"✅ Папка «{folder_name}» и всё её содержимое удалены!", show_alert=True)
         await my_files(update, context, parent_id, 0)
