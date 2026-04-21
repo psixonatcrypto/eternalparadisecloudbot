@@ -3,10 +3,11 @@ import asyncio
 import datetime
 import logging
 import traceback
+import sqlite3
 from uuid import uuid4
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from config import ADMIN_ID, CHANNEL_ID, BOT_USERNAME, ABOUT_TEXT, COMPLAINT_TEXT, HELP_TEXT
+from config import ADMIN_ID, CHANNEL_ID, BOT_USERNAME, ABOUT_TEXT, COMPLAINT_TEXT, HELP_TEXT, DB_NAME
 from db import *
 from keyboards import *
 from utils import send_error_to_admin, format_datetime_for_user, hash_password, check_password
@@ -300,7 +301,7 @@ async def check_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     now_utc = datetime.datetime.now()
-    now_local = now_utc + datetime.timedelta(hours=TIMEZONE_OFFSET)
+    now_local = now_utc + datetime.timedelta(hours=3)
     
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
@@ -381,6 +382,102 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка в handle_file: {e}")
         await send_error_to_admin(f"Ошибка в handle_file:\n{traceback.format_exc()}")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not update.message:
+            return
+        text = update.message.text.strip()
+        
+        if context.user_data.get('new_folder_parent') is not None:
+            await process_folder_creation(update, context)
+            return
+        
+        if context.user_data.get('rename_file_key') is not None:
+            await rename_file_process(update, context)
+            return
+        
+        if context.user_data.get('waiting_for') == 'search_query':
+            context.user_data['waiting_for'] = None
+            query = text
+            user_id = update.effective_user.id
+            results = search_files(user_id, query)
+            
+            if not results:
+                await update.message.reply_text(f"❌ По запросу «{query}» ничего не найдено.\n\nПопробуйте поискать по названию файла или по ключу.")
+                return
+            
+            context.user_data['search_results'] = results
+            text_msg = f"🔎 *Результаты поиска по запросу «{query}»:*\nНайдено {len(results)} файлов."
+            await update.message.reply_text(text_msg, parse_mode="Markdown")
+            await update.message.reply_text("📋 Список найденных файлов:", reply_markup=search_results_keyboard(results, 0))
+            return
+        
+        if context.user_data.get('pending_file_key'):
+            key = context.user_data.pop('pending_file_key')
+            info = get_file_info(key)
+            if info and info.get("password_hash"):
+                if is_file_blocked(key):
+                    await update.message.reply_text("⛔ Доступ к файлу заблокирован на 1 час из-за частых неверных попыток ввода пароля.")
+                    return
+                
+                if check_password(text, info["password_hash"]):
+                    conn = sqlite3.connect(DB_NAME)
+                    c = conn.cursor()
+                    c.execute('UPDATE files SET failed_attempts = 0, blocked_until = NULL WHERE key = ?', (key,))
+                    conn.commit()
+                    conn.close()
+                    increment_downloads(key)
+                    await send_file_by_info(update.effective_chat.id, info, key, context.bot)
+                else:
+                    attempts = increment_failed_attempts(key)
+                    if attempts >= 5:
+                        block_file_access(key)
+                        await update.message.reply_text("⛔ Вы превысили лимит неверных попыток (5). Доступ к файлу заблокирован на 1 час.")
+                    else:
+                        await update.message.reply_text(f"❌ Неверный пароль. Осталось попыток: {5 - attempts}")
+            else:
+                await update.message.reply_text("❌ Файл не найден или пароль не установлен.")
+            return
+        
+        if context.user_data.get('waiting_for') == 'get_key':
+            context.user_data['waiting_for'] = None
+            info = get_file_info(text)
+            if not info:
+                await update.message.reply_text("❌ Файл не найден.")
+                return
+            if info.get("password_hash"):
+                context.user_data['pending_file_key'] = text
+                await update.message.reply_text("🔒 Файл защищён паролем. Введите пароль:")
+            else:
+                increment_downloads(text)
+                await send_file_by_info(update.effective_chat.id, info, text, context.bot)
+            return
+        
+        if context.user_data.get('waiting_for') == 'delete_key':
+            context.user_data['waiting_for'] = None
+            info = get_file_info(text)
+            if not info:
+                await update.message.reply_text("❌ Файл не найден.")
+                return
+            try:
+                await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
+            except:
+                pass
+            delete_file_info(text)
+            await update.message.reply_text(f"✅ Файл с ключом `{text}` удалён.")
+            return
+        
+        if context.user_data.get('temp_file_needs_pwd') is True and context.user_data.get('temp_file_data') is not None:
+            password = text
+            context.user_data['temp_file_needs_pwd'] = False
+            await final_save_file_from_text(update, context, password)
+            return
+        
+        await update.message.reply_text("❓ Используйте кнопки меню")
+    except Exception as e:
+        logger.error(f"Ошибка в handle_text: {e}")
+        await send_error_to_admin(f"Ошибка в handle_text:\n{traceback.format_exc()}")
 
 async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period):
     try:
@@ -792,3 +889,178 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
     except Exception as e:
         logger.error(f"Ошибка в delete_folder: {e}")
         await send_error_to_admin(f"Ошибка в delete_folder:\n{traceback.format_exc()}")
+
+# --- Обработчик кнопок ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        data = query.data
+        
+        if data == "upload":
+            await query.answer("Просто отправьте мне любой файл")
+        elif data == "search_prompt":
+            context.user_data['waiting_for'] = 'search_query'
+            await query.message.reply_text("🔎 Введите текст для поиска (можно искать по названию файла или по ключу):")
+            await query.answer()
+        elif data == "favorites":
+            await favorites(update, context, 0)
+        elif data.startswith("favorites_page_"):
+            page = int(data.split("_")[2])
+            await favorites(update, context, page)
+        elif data.startswith("search_page_"):
+            page = int(data.split("_")[2])
+            results = context.user_data.get('search_results', [])
+            await query.message.edit_reply_markup(reply_markup=search_results_keyboard(results, page))
+            await query.answer()
+        elif data == "main_menu":
+            context.user_data['current_folder'] = 0
+            await query.message.edit_text("👋 Главное меню\n\nИспользуйте кнопки ниже:", reply_markup=main_keyboard())
+            await query.answer()
+        elif data == "about":
+            await about(update, context)
+        elif data == "complaint":
+            await complaint(update, context)
+        elif data == "help":
+            await query.message.edit_text(HELP_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]]))
+            await query.answer()
+        elif data == "my_files_root":
+            context.user_data['current_folder'] = 0
+            await my_files(update, context, 0, 0)
+        elif data.startswith("my_files_back_"):
+            try:
+                current_parent = int(data.split("_")[3])
+                conn = sqlite3.connect(DB_NAME)
+                c = conn.cursor()
+                c.execute('SELECT parent_id FROM folders WHERE id = ? AND user_id = ?', (current_parent, update.effective_user.id))
+                row = c.fetchone()
+                conn.close()
+                parent_id = row[0] if row else 0
+                context.user_data['current_folder'] = parent_id
+                await my_files(update, context, parent_id, 0)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("my_files_"):
+            try:
+                parent_id = int(data.split("_")[2])
+                context.user_data['current_folder'] = parent_id
+                await my_files(update, context, parent_id, 0)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("open_folder_"):
+            try:
+                parts = data.split("_")
+                folder_id = int(parts[2])
+                files_page = int(parts[3]) if len(parts) > 3 else 0
+                context.user_data['current_folder'] = folder_id
+                await my_files(update, context, folder_id, files_page)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("open_file_"):
+            try:
+                parts = data.split("_")
+                key = parts[2]
+                parent_id = int(parts[3]) if len(parts) > 3 else 0
+                files_page = int(parts[4]) if len(parts) > 4 else 0
+                await open_file(update, context, key, parent_id, files_page)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("files_page_"):
+            try:
+                parts = data.split("_")
+                parent_id = int(parts[2])
+                files_page = int(parts[3])
+                user_id = update.effective_user.id
+                keyboard = folder_keyboard(user_id, parent_id, files_page)
+                await query.message.edit_reply_markup(reply_markup=keyboard)
+                await query.answer()
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("new_folder_"):
+            try:
+                parts = data.split("_")
+                parent_id = int(parts[2])
+                files_page = int(parts[3])
+                await new_folder_start(update, context, parent_id, files_page)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("delete_folder_"):
+            try:
+                parts = data.split("_")
+                folder_id = int(parts[2])
+                files_page = int(parts[3]) if len(parts) > 3 else 0
+                await delete_folder(update, context, folder_id, files_page)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data.startswith("period_"):
+            try:
+                period = data.split("_")[1]
+                if context.user_data.get('temp_file'):
+                    await save_file_with_options(update, context, period)
+                else:
+                    await query.answer("❌ Ошибка: файл не найден. Попробуйте заново.", show_alert=True)
+            except:
+                await query.answer("Ошибка", show_alert=True)
+        elif data == "cancel_upload":
+            context.user_data.pop('temp_file', None)
+            await query.message.edit_text("❌ Загрузка отменена.")
+            await query.answer()
+        elif data == "final_with_pwd":
+            context.user_data['temp_file_needs_pwd'] = True
+            await query.message.reply_text("Введите пароль для файла:")
+            await query.answer()
+        elif data == "final_no_pwd":
+            await final_save_file_from_callback(update, context, password=None)
+        elif data.startswith("rename_"):
+            key = data[7:]
+            await rename_file_start(update, context, key)
+        elif data.startswith("favorite_"):
+            key = data[9:]
+            await favorite_file(update, context, key)
+        elif data.startswith("unfavorite_"):
+            key = data[11:]
+            await favorite_file(update, context, key)
+        elif data.startswith("share_link_"):
+            key = data[11:]
+            await share_file_link(update, context, key)
+        elif data.startswith("back_to_file_"):
+            parts = data.split("_")
+            key = parts[3]
+            folder_id = int(parts[4]) if len(parts) > 4 else 0
+            await back_to_file(update, context, key, folder_id)
+        elif data.startswith("move_file_"):
+            parts = data.split("_")
+            key = parts[2]
+            current_folder_id = int(parts[3]) if len(parts) > 3 else 0
+            await move_file_start(update, context, key, current_folder_id)
+        elif data.startswith("move_to_folder_"):
+            parts = data.split("_")
+            key = parts[3]
+            target_folder_id = int(parts[4]) if len(parts) > 4 else 0
+            await move_file_to_folder(update, context, key, target_folder_id)
+        elif data == "cancel_move":
+            context.user_data.pop('moving_file', None)
+            await query.message.edit_text("❌ Перемещение отменено.")
+            await query.answer()
+        elif data.startswith("unlock_"):
+            key = data[7:]
+            await unlock_file(update, context, key)
+        elif data.startswith("copy_"):
+            key = data[5:]
+            await query.message.reply_text(f"📌 *Ключ файла:*\n`{key}`\n\nНажмите на ключ, чтобы скопировать.", parse_mode="Markdown")
+            await query.answer()
+        elif data.startswith("delete_"):
+            key = data[7:]
+            info = get_file_info(key)
+            if info:
+                try:
+                    await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=info["message_id"])
+                except:
+                    pass
+                delete_file_info(key)
+                await query.answer("✅ Файл удалён", show_alert=True)
+                await query.message.edit_text("Файл удалён", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="my_files_root")]]))
+        else:
+            await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка в button_handler: {e}")
+        await send_error_to_admin(f"Ошибка в button_handler (data={data if 'data' in locals() else 'unknown'}):\n{traceback.format_exc()}")
