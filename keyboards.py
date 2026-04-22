@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
+import sqlite3
+import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from config import BOT_USERNAME
+from config import BOT_USERNAME, DB_NAME
 from db import get_user_folders, get_user_files_in_folder
 from utils import format_datetime_for_user
-import datetime
 
 def main_keyboard():
     keyboard = [
@@ -89,7 +90,6 @@ def storage_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def favorites_keyboard(user_id, page=0, limit=10):
-    from db import get_user_folders  # local import to avoid circular
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('SELECT key, filename, created_at, expires_at, downloads_count FROM files WHERE user_id = ? AND is_favorite = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?',
