@@ -234,7 +234,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(0.05)
         await update.message.reply_text(f"📨 Рассылка завершена.\n✅ Отправлено: {sent}\n❌ Ошибок: {failed}")
     except Exception as e:
-        logger.error(f"Ошибка在 broadcast: {e}")
+        logger.error(f"Ошибка в broadcast: {e}")
         await send_error_to_admin(f"Ошибка в broadcast:\n{traceback.format_exc()}")
 
 async def delkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -513,13 +513,15 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
         elif period == "forever":
             period_text = "навсегда"
         
+        expires_at_str = expires_at.strftime("%Y-%m-%d %H:%M:%S") if expires_at else None
+        
         context.user_data['temp_file_data'] = {
             'file_id': file_id,
             'filename': filename,
             'media_type': media_type,
             'user_id': user_id,
             'user_first_name': user_first_name,
-            'expires_at': expires_at.isoformat() if expires_at else None,
+            'expires_at': expires_at_str,
             'period_text': period_text,
             'folder_id': folder_id
         }
@@ -578,7 +580,7 @@ async def _save_file(message, context, temp, password=None):
         
         caption = f"📁 Файл от {user_first_name}\n🔑 Ключ: {key}"
         if expires_at:
-            expires_utc = datetime.datetime.fromisoformat(expires_at)
+            expires_utc = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
             expires_local = format_datetime_for_user(expires_utc)
             caption += f"\n⏰ Удалить: {expires_local} (МСК)"
         
@@ -634,10 +636,9 @@ async def open_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, par
             await query.answer("❌ Файл не найден", show_alert=True)
             return
         
-        # Форматируем дату истечения
         if info.get('expires_at'):
             try:
-                expires_dt = datetime.datetime.fromisoformat(info['expires_at'])
+                expires_dt = datetime.datetime.strptime(info['expires_at'], "%Y-%m-%d %H:%M:%S")
                 expires_str = format_datetime_for_user(expires_dt)
             except:
                 expires_str = info['expires_at']
@@ -696,10 +697,9 @@ async def rename_file_process(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     info = get_file_info(key)
     if info:
-        # Форматируем дату истечения
         if info.get('expires_at'):
             try:
-                expires_dt = datetime.datetime.fromisoformat(info['expires_at'])
+                expires_dt = datetime.datetime.strptime(info['expires_at'], "%Y-%m-%d %H:%M:%S")
                 expires_str = format_datetime_for_user(expires_dt)
             except:
                 expires_str = info['expires_at']
@@ -768,10 +768,9 @@ async def back_to_file(update: Update, context: ContextTypes.DEFAULT_TYPE, key, 
             await query.answer("❌ Файл не найден", show_alert=True)
             return
         
-        # Форматируем дату истечения
         if info.get('expires_at'):
             try:
-                expires_dt = datetime.datetime.fromisoformat(info['expires_at'])
+                expires_dt = datetime.datetime.strptime(info['expires_at'], "%Y-%m-%d %H:%M:%S")
                 expires_str = format_datetime_for_user(expires_dt)
             except:
                 expires_str = info['expires_at']
@@ -897,7 +896,7 @@ async def delete_folder(update: Update, context: ContextTypes.DEFAULT_TYPE, fold
         
         folder_name, parent_id = row
         
-        files_in_folder, subfolders = delete_folder_and_files(folder_id, user_id)
+        files_in_folder = delete_folder_and_files(folder_id, user_id)
         
         for key, message_id in files_in_folder:
             try:
