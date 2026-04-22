@@ -5,7 +5,7 @@ import threading
 from flask import Flask
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from config import BOT_TOKEN
-from db import init_db, get_expired_files, delete_file_info
+from db import init_db, get_expired_files, delete_file_info, Database
 from handlers import (
     start, help_text, get_command, delete_command, delkey_command,
     broadcast, stats, search_command, check_expired_now, check_time,
@@ -13,11 +13,9 @@ from handlers import (
 )
 from utils import set_bot_instance
 
-# Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Веб-сервер для бодрствования ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -29,28 +27,31 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Фоновая задача для автоудаления ---
 async def check_expired_files(app):
     while True:
         try:
+            with Database() as c:
+                c.execute('SELECT datetime("now")')
+                now_sqlite = c.fetchone()[0]
+                logger.info(f"Проверка просрочки | SQLite время: {now_sqlite}")
+            
             expired = get_expired_files()
             if expired:
                 logger.info(f"Найдено {len(expired)} просроченных файлов")
                 for key, message_id, chat_id, filename, expires_at in expired:
                     try:
                         await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                        logger.info(f"Удалено сообщение {message_id} из канала для файла {filename}")
+                        logger.info(f"✅ Удалено сообщение {message_id} из канала для файла {filename}")
                         delete_file_info(key)
-                        logger.info(f"Автоудаление: {filename} (ключ {key}) удалён")
+                        logger.info(f"✅ Автоудаление: {filename} (ключ {key}) удалён из БД")
                     except Exception as e:
-                        logger.error(f"Не удалось удалить {filename}: {e}")
+                        logger.error(f"❌ Не удалось удалить {filename}: {e}")
             else:
                 logger.info("Просроченных файлов не найдено")
         except Exception as e:
             logger.error(f"Ошибка при проверке просроченных файлов: {e}")
-        await asyncio.sleep(300)  # 5 минут
+        await asyncio.sleep(60)
 
-# --- Запуск ---
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -60,7 +61,6 @@ def main():
     asyncio.set_event_loop(loop)
     loop.create_task(check_expired_files(app))
     
-    # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_text))
     app.add_handler(CommandHandler("get", get_command))
