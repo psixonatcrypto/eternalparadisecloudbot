@@ -57,7 +57,6 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_user_folder ON files(user_id, folder_id)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_files_is_favorite ON files(is_favorite)')
         
-        # Оптимизация для Render
         c.execute('PRAGMA journal_mode=WAL')
         c.execute('PRAGMA synchronous=NORMAL')
     logger.info("База данных инициализирована")
@@ -112,9 +111,7 @@ def is_file_blocked(key):
         return row is not None
 
 def get_expired_files(batch_size=100):
-    """Возвращает просроченные файлы порциями (ИСПРАВЛЕНО)"""
     with Database() as c:
-        # Используем datetime('now') SQLite для правильного сравнения
         c.execute('''
             SELECT key, message_id, chat_id, filename, expires_at 
             FROM files 
@@ -177,13 +174,11 @@ def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
         ''', (user_id, folder_id, limit, offset))
         rows = c.fetchall()
         
-        # Получаем общее количество
         c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND folder_id = ?', (user_id, folder_id))
         total = c.fetchone()[0]
         return rows, total
 
 def delete_folder_and_files(folder_id, user_id):
-    """Удаляет папку и все файлы внутри неё"""
     files_to_delete = []
     with Database() as c:
         c.execute('SELECT key, message_id FROM files WHERE folder_id = ? AND user_id = ?', (folder_id, user_id))
