@@ -78,14 +78,16 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     
     return InlineKeyboardMarkup(keyboard)
 
-def storage_keyboard():
+def storage_keyboard(upload_id=None):
+    """Создаёт клавиатуру выбора срока хранения с привязкой к upload_id"""
+    suffix = f"_{upload_id}" if upload_id else ""
     keyboard = [
-        [InlineKeyboardButton("⏰ 1 час", callback_data="period_1h")],
-        [InlineKeyboardButton("📅 1 день", callback_data="period_1d")],
-        [InlineKeyboardButton("📆 1 неделя", callback_data="period_1w")],
-        [InlineKeyboardButton("🗓 1 месяц", callback_data="period_1m")],
-        [InlineKeyboardButton("♾ Навсегда", callback_data="period_forever")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_upload")]
+        [InlineKeyboardButton("⏰ 1 час", callback_data=f"period_1h{suffix}")],
+        [InlineKeyboardButton("📅 1 день", callback_data=f"period_1d{suffix}")],
+        [InlineKeyboardButton("📆 1 неделя", callback_data=f"period_1w{suffix}")],
+        [InlineKeyboardButton("🗓 1 месяц", callback_data=f"period_1m{suffix}")],
+        [InlineKeyboardButton("♾ Навсегда", callback_data=f"period_forever{suffix}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_upload{suffix}")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
