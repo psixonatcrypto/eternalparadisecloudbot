@@ -4,6 +4,7 @@ import datetime
 import logging
 import traceback
 import sqlite3
+import uuid
 from uuid import uuid4
 from telegram import Update, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -365,19 +366,31 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_folder = context.user_data.get('current_folder', 0)
         
-        context.user_data['temp_file'] = {
+        # Генерируем уникальный ID для этой загрузки
+        upload_id = str(uuid.uuid4())[:8]
+        
+        # Создаём очередь загрузок, если её нет
+        if 'pending_uploads' not in context.user_data:
+            context.user_data['pending_uploads'] = {}
+        
+        # Сохраняем файл в очередь
+        context.user_data['pending_uploads'][upload_id] = {
             'file_id': file_id,
             'filename': filename,
             'media_type': media_type,
             'user_id': user.id,
             'user_first_name': user.first_name,
-            'folder_id': current_folder
+            'folder_id': current_folder,
+            'message_id': message.message_id
         }
+        
+        # Запоминаем текущий upload_id для этого сообщения
+        context.user_data['current_upload_id'] = upload_id
         
         await update.message.reply_text(
             f"📁 Файл *{filename}*\n\nВыберите срок хранения:",
             parse_mode="Markdown",
-            reply_markup=storage_keyboard()
+            reply_markup=storage_keyboard(upload_id)
         )
     except Exception as e:
         logger.error(f"Ошибка в handle_file: {e}")
@@ -468,7 +481,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Файл с ключом `{text}` удалён.")
             return
         
-        if context.user_data.get('temp_file_needs_pwd') is True and context.user_data.get('temp_file_data') is not None:
+        if context.user_data.get('temp_file_needs_pwd') is True:
             password = text
             context.user_data['temp_file_needs_pwd'] = False
             await final_save_file_from_text(update, context, password)
@@ -479,15 +492,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в handle_text: {e}")
         await send_error_to_admin(f"Ошибка в handle_text:\n{traceback.format_exc()}")
 
-async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period):
+async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_TYPE, period, upload_id=None):
     try:
         query = update.callback_query
         await query.answer()
         
-        temp = context.user_data.get('temp_file')
-        if not temp:
-            await query.message.reply_text("❌ Ошибка: файл не найден. Попробуйте загрузить заново.")
-            return
+        # Получаем данные файла из очереди
+        pending_uploads = context.user_data.get('pending_uploads', {})
+        
+        if upload_id and upload_id in pending_uploads:
+            temp = pending_uploads[upload_id]
+        else:
+            # Для обратной совместимости
+            temp = context.user_data.get('temp_file')
+            if not temp:
+                await query.message.reply_text("❌ Ошибка: файл не найден. Попробуйте загрузить заново.")
+                return
         
         file_id = temp['file_id']
         filename = temp['filename']
@@ -515,7 +535,8 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
         
         expires_at_str = expires_at.strftime("%Y-%m-%d %H:%M:%S") if expires_at else None
         
-        context.user_data['temp_file_data'] = {
+        # Сохраняем данные с привязкой к upload_id
+        context.user_data['temp_file_data_' + upload_id] = {
             'file_id': file_id,
             'filename': filename,
             'media_type': media_type,
@@ -523,14 +544,18 @@ async def save_file_with_options(update: Update, context: ContextTypes.DEFAULT_T
             'user_first_name': user_first_name,
             'expires_at': expires_at_str,
             'period_text': period_text,
-            'folder_id': folder_id
+            'folder_id': folder_id,
+            'upload_id': upload_id
         }
         
+        # Запоминаем текущий upload_id
+        context.user_data['current_upload_id'] = upload_id
+        
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔒 Да, установить пароль", callback_data="final_with_pwd")],
-            [InlineKeyboardButton("📁 Нет, без пароля", callback_data="final_no_pwd")]
+            [InlineKeyboardButton("🔒 Да, установить пароль", callback_data=f"final_with_pwd_{upload_id}")],
+            [InlineKeyboardButton("📁 Нет, без пароля", callback_data=f"final_no_pwd_{upload_id}")]
         ])
-        await query.message.edit_text(f"Срок хранения: {period_text}\n\nУстановить пароль на файл?", reply_markup=keyboard)
+        await query.message.edit_text(f"📁 *{filename}*\nСрок хранения: {period_text}\n\nУстановить пароль на файл?", parse_mode="Markdown", reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка в save_file_with_options: {e}")
         await send_error_to_admin(f"Ошибка в save_file_with_options:\n{traceback.format_exc()}")
@@ -540,12 +565,30 @@ async def final_save_file_from_callback(update: Update, context: ContextTypes.DE
         query = update.callback_query
         await query.answer()
         
-        temp = context.user_data.get('temp_file_data')
+        # Извлекаем upload_id из callback_data
+        upload_id = None
+        if '_' in query.data:
+            parts = query.data.split('_')
+            if len(parts) >= 4:
+                upload_id = parts[3]
+        
+        if not upload_id:
+            upload_id = context.user_data.get('current_upload_id')
+        
+        # Получаем данные файла
+        temp_key = 'temp_file_data_' + upload_id if upload_id else 'temp_file_data'
+        temp = context.user_data.get(temp_key)
+        
         if not temp:
-            await query.message.reply_text("❌ Ошибка: данные файла не найдены.")
+            await query.message.reply_text("❌ Ошибка: данные файла не найдены. Попробуйте загрузить заново.")
             return
         
         await _save_file(query.message, context, temp, password)
+        
+        # Очищаем использованные данные
+        if upload_id:
+            context.user_data.pop(temp_key, None)
+            context.user_data.get('pending_uploads', {}).pop(upload_id, None)
     except Exception as e:
         logger.error(f"Ошибка в final_save_file_from_callback: {e}")
         await send_error_to_admin(f"Ошибка в final_save_file_from_callback:\n{traceback.format_exc()}")
@@ -553,12 +596,21 @@ async def final_save_file_from_callback(update: Update, context: ContextTypes.DE
 async def final_save_file_from_text(update: Update, context: ContextTypes.DEFAULT_TYPE, password=None):
     try:
         message = update.message
-        temp = context.user_data.get('temp_file_data')
+        upload_id = context.user_data.get('current_upload_id')
+        
+        temp_key = 'temp_file_data_' + upload_id if upload_id else 'temp_file_data'
+        temp = context.user_data.get(temp_key)
+        
         if not temp:
-            await message.reply_text("❌ Ошибка: данные файла не найдены.")
+            await message.reply_text("❌ Ошибка: данные файла не найдены. Попробуйте загрузить заново.")
             return
         
         await _save_file(message, context, temp, password)
+        
+        # Очищаем использованные данные
+        if upload_id:
+            context.user_data.pop(temp_key, None)
+            context.user_data.get('pending_uploads', {}).pop(upload_id, None)
     except Exception as e:
         logger.error(f"Ошибка в final_save_file_from_text: {e}")
         await send_error_to_admin(f"Ошибка в final_save_file_from_text:\n{traceback.format_exc()}")
@@ -618,8 +670,6 @@ async def _save_file(message, context, temp, password=None):
         )
         
         context.user_data.pop('temp_file', None)
-        context.user_data.pop('temp_file_data', None)
-        context.user_data.pop('temp_file_needs_pwd', None)
         
     except Exception as e:
         logger.error(f"Ошибка при сохранении: {e}")
@@ -1014,22 +1064,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("Ошибка", show_alert=True)
         elif data.startswith("period_"):
             try:
-                period = data.split("_")[1]
-                if context.user_data.get('temp_file'):
-                    await save_file_with_options(update, context, period)
+                parts = data.split("_")
+                period = parts[1]
+                upload_id = parts[2] if len(parts) > 2 else None
+                if context.user_data.get('pending_uploads') or context.user_data.get('temp_file'):
+                    await save_file_with_options(update, context, period, upload_id)
                 else:
                     await query.answer("❌ Ошибка: файл не найден. Попробуйте заново.", show_alert=True)
-            except:
-                await query.answer("Ошибка", show_alert=True)
-        elif data == "cancel_upload":
-            context.user_data.pop('temp_file', None)
+            except Exception as e:
+                logger.error(f"Ошибка в period_: {e}")
+        elif data.startswith("cancel_upload"):
+            upload_id = data.split("_")[2] if len(data.split("_")) > 2 else None
+            if upload_id:
+                context.user_data.get('pending_uploads', {}).pop(upload_id, None)
+            else:
+                context.user_data.pop('temp_file', None)
             await query.message.edit_text("❌ Загрузка отменена.")
             await query.answer()
-        elif data == "final_with_pwd":
+        elif data.startswith("final_with_pwd"):
+            upload_id = data.split("_")[3] if len(data.split("_")) > 3 else None
             context.user_data['temp_file_needs_pwd'] = True
+            context.user_data['current_upload_id'] = upload_id
             await query.message.reply_text("Введите пароль для файла:")
             await query.answer()
-        elif data == "final_no_pwd":
+        elif data.startswith("final_no_pwd"):
+            upload_id = data.split("_")[3] if len(data.split("_")) > 3 else None
+            context.user_data['current_upload_id'] = upload_id
             await final_save_file_from_callback(update, context, password=None)
         elif data.startswith("rename_"):
             key = data[7:]
