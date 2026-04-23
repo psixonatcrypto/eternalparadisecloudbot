@@ -4,7 +4,6 @@ import logging
 import threading
 import os
 import sys
-import fcntl
 from flask import Flask
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from config import BOT_TOKEN
@@ -16,21 +15,9 @@ from handlers import (
 )
 from utils import set_bot_instance
 
-# Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Проверка на двойной запуск ---
-lock_file = "/tmp/bot.lock"
-try:
-    lock_fd = open(lock_file, 'w')
-    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    logger.info("✅ Блокировка получена, бот запущен единственный раз")
-except IOError:
-    logger.error("❌ Бот уже запущен! Завершаем работу.")
-    sys.exit(1)
-
-# --- Веб-сервер для бодрствования ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -38,11 +25,11 @@ def health():
     return "Бот работает", 200
 
 def run_web():
-    flask_app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Фоновая задача для автоудаления ---
 async def check_expired_files(app):
     while True:
         try:
@@ -68,7 +55,6 @@ async def check_expired_files(app):
             logger.error(f"Ошибка при проверке просроченных файлов: {e}")
         await asyncio.sleep(60)
 
-# --- Запуск ---
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -78,7 +64,6 @@ def main():
     asyncio.set_event_loop(loop)
     loop.create_task(check_expired_files(app))
     
-    # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_text))
     app.add_handler(CommandHandler("get", get_command))
@@ -96,16 +81,8 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    logger.info("Бот запущен (модульная версия)")
-    
-    try:
-        app.run_polling()
-    except Exception as e:
-        logger.error(f"Ошибка при запуске polling: {e}")
-    finally:
-        # Освобождаем блокировку при завершении
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+    logger.info("Бот запущен")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
