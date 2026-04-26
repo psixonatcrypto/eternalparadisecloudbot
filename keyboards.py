@@ -35,42 +35,91 @@ def owner_file_actions_keyboard(key, has_password=False, folder_id=0, is_favorit
     keyboard.append([InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{key}")])
     return InlineKeyboardMarkup(keyboard)
 
-def folder_keyboard(user_id, parent_id=0, files_page=0):
+def folder_keyboard(user_id, parent_id=0, files_page=0, sort_by="date", sort_order="DESC"):
     folders = get_user_folders(user_id, parent_id)
-    files, total_files = get_user_files_in_folder(user_id, parent_id, limit=10, offset=files_page * 10)
+    files, total_files = get_user_files_in_folder(user_id, parent_id, limit=10, offset=files_page * 10, sort_by=sort_by, sort_order=sort_order)
     
     keyboard = []
+    
+    # Кнопки сортировки
+    sort_buttons = []
+    
+    # Сортировка по дате
+    date_icon = "📅✓" if sort_by == "date" else "📅"
+    sort_buttons.append(InlineKeyboardButton(date_icon, callback_data=f"sort_date_{parent_id}_{files_page}"))
+    
+    # Сортировка по имени
+    name_icon = "🔤✓" if sort_by == "name" else "🔤"
+    sort_buttons.append(InlineKeyboardButton(name_icon, callback_data=f"sort_name_{parent_id}_{files_page}"))
+    
+    # Сортировка по размеру
+    size_icon = "💾✓" if sort_by == "size" else "💾"
+    sort_buttons.append(InlineKeyboardButton(size_icon, callback_data=f"sort_size_{parent_id}_{files_page}"))
+    
+    # Сортировка по скачиваниям
+    down_icon = "📊✓" if sort_by == "downloads" else "📊"
+    sort_buttons.append(InlineKeyboardButton(down_icon, callback_data=f"sort_downloads_{parent_id}_{files_page}"))
+    
+    # Порядок (возрастание/убывание)
+    order_icon = "⬆️" if sort_order == "ASC" else "⬇️"
+    sort_buttons.append(InlineKeyboardButton(order_icon, callback_data=f"sort_order_{parent_id}_{files_page}_{sort_by}"))
+    
+    keyboard.append(sort_buttons)
+    
+    # Папки
     for folder_id, folder_name in folders:
         keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"open_folder_{folder_id}_{files_page}")])
     
-    for key, filename, created_at, expires_at, downloads_count, is_favorite in files:
+    # Файлы
+    for row in files:
+        if len(row) == 7:
+            key, filename, created_at, expires_at, downloads_count, is_favorite, file_size = row
+        else:
+            key, filename, created_at, expires_at, downloads_count, is_favorite = row
+            file_size = 0
+        
         star = "⭐️ " if is_favorite else ""
+        
+        # Форматируем размер
+        size_str = ""
+        if file_size and file_size > 0:
+            if file_size < 1024:
+                size_str = f" ({file_size} B)"
+            elif file_size < 1024 * 1024:
+                size_str = f" ({file_size // 1024} KB)"
+            else:
+                size_str = f" ({file_size // (1024 * 1024)} MB)"
+        
         if expires_at:
             try:
                 expires_dt = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
                 expires_str = format_datetime_for_user(expires_dt)
-                display_name = f"{star}📄 {filename[:15]} (до {expires_str}) 👁 {downloads_count}"
+                display_name = f"{star}📄 {filename[:12]}{size_str} (до {expires_str}) 👁 {downloads_count}"
             except:
-                display_name = f"{star}📄 {filename[:20]} 👁 {downloads_count}"
+                display_name = f"{star}📄 {filename[:20]}{size_str} 👁 {downloads_count}"
         else:
-            display_name = f"{star}📄 {filename[:20]} 👁 {downloads_count}"
-        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_{parent_id}_{files_page}")])
+            display_name = f"{star}📄 {filename[:20]}{size_str} 👁 {downloads_count}"
+        
+        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_{parent_id}_{files_page}_{sort_by}_{sort_order}")])
     
+    # Пагинация
     nav_buttons = []
     if files_page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"files_page_{parent_id}_{files_page-1}"))
+        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"files_page_{parent_id}_{files_page-1}_{sort_by}_{sort_order}"))
     if (files_page + 1) * 10 < total_files:
-        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"files_page_{parent_id}_{files_page+1}"))
+        nav_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"files_page_{parent_id}_{files_page+1}_{sort_by}_{sort_order}"))
     if nav_buttons:
         keyboard.append(nav_buttons)
     
+    # Действия с папками
     if parent_id == 0:
-        keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}")])
+        keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}_{sort_by}_{sort_order}")])
     else:
         keyboard.append([InlineKeyboardButton("🗑 Удалить эту папку", callback_data=f"delete_folder_{parent_id}_{files_page}")])
     
     keyboard.append([InlineKeyboardButton("📤 Добавить файл", callback_data="upload")])
     
+    # Навигация назад
     if parent_id != 0:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"my_files_back_{parent_id}")])
     else:
@@ -79,7 +128,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0):
     return InlineKeyboardMarkup(keyboard)
 
 def storage_keyboard(upload_id=None):
-    """Создаёт клавиатуру выбора срока хранения с привязкой к upload_id"""
     suffix = f"_{upload_id}" if upload_id else ""
     keyboard = [
         [InlineKeyboardButton("⏰ 1 час", callback_data=f"period_1h{suffix}")],
@@ -94,7 +142,7 @@ def storage_keyboard(upload_id=None):
 def favorites_keyboard(user_id, page=0, limit=10):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT key, filename, created_at, expires_at, downloads_count FROM files WHERE user_id = ? AND is_favorite = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    c.execute('SELECT key, filename, created_at, expires_at, downloads_count, file_size FROM files WHERE user_id = ? AND is_favorite = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?',
               (user_id, limit, page * limit))
     files = c.fetchall()
     c.execute('SELECT COUNT(*) FROM files WHERE user_id = ? AND is_favorite = 1', (user_id,))
@@ -102,16 +150,26 @@ def favorites_keyboard(user_id, page=0, limit=10):
     conn.close()
     
     keyboard = []
-    for key, filename, created_at, expires_at, downloads_count in files:
+    for key, filename, created_at, expires_at, downloads_count, file_size in files:
+        # Форматируем размер
+        size_str = ""
+        if file_size and file_size > 0:
+            if file_size < 1024:
+                size_str = f" ({file_size} B)"
+            elif file_size < 1024 * 1024:
+                size_str = f" ({file_size // 1024} KB)"
+            else:
+                size_str = f" ({file_size // (1024 * 1024)} MB)"
+        
         if expires_at:
             try:
                 expires_dt = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
                 expires_str = format_datetime_for_user(expires_dt)
-                display_name = f"📄 {filename[:20]} (до {expires_str}) 👁 {downloads_count}"
+                display_name = f"📄 {filename[:20]}{size_str} (до {expires_str}) 👁 {downloads_count}"
             except:
-                display_name = f"📄 {filename[:25]}"
+                display_name = f"📄 {filename[:25]}{size_str}"
         else:
-            display_name = f"📄 {filename[:25]}"
+            display_name = f"📄 {filename[:25]}{size_str}"
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_0_0")])
     
     total_pages = (total + limit - 1) // limit
@@ -130,17 +188,34 @@ def search_results_keyboard(files, page=0, limit=10):
     keyboard = []
     start = page * limit
     end = start + limit
-    for key, filename, created_at, expires_at, downloads_count, is_favorite in files[start:end]:
+    for row in files[start:end]:
+        if len(row) == 7:
+            key, filename, created_at, expires_at, downloads_count, is_favorite, file_size = row
+        else:
+            key, filename, created_at, expires_at, downloads_count, is_favorite = row
+            file_size = 0
+        
         star = "⭐️ " if is_favorite else ""
+        
+        # Форматируем размер
+        size_str = ""
+        if file_size and file_size > 0:
+            if file_size < 1024:
+                size_str = f" ({file_size} B)"
+            elif file_size < 1024 * 1024:
+                size_str = f" ({file_size // 1024} KB)"
+            else:
+                size_str = f" ({file_size // (1024 * 1024)} MB)"
+        
         if expires_at:
             try:
                 expires_dt = datetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
                 expires_str = format_datetime_for_user(expires_dt)
-                display_name = f"{star}📄 {filename[:20]} (до {expires_str}) 👁 {downloads_count}"
+                display_name = f"{star}📄 {filename[:20]}{size_str} (до {expires_str}) 👁 {downloads_count}"
             except:
-                display_name = f"{star}📄 {filename[:25]}"
+                display_name = f"{star}📄 {filename[:25]}{size_str}"
         else:
-            display_name = f"{star}📄 {filename[:25]}"
+            display_name = f"{star}📄 {filename[:25]}{size_str}"
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_0_0")])
     
     total_pages = (len(files) + limit - 1) // limit
