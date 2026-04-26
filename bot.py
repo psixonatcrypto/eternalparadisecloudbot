@@ -3,7 +3,6 @@ import asyncio
 import logging
 import threading
 import os
-import sys
 import signal
 from flask import Flask
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -16,11 +15,9 @@ from handlers import (
 )
 from utils import set_bot_instance
 
-# Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Флаг для graceful shutdown
 shutdown_event = asyncio.Event()
 
 def signal_handler(signum, frame):
@@ -30,19 +27,11 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-# --- Веб-сервер для бодрствования ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
     return "Бот работает", 200
-
-@flask_app.route('/health')
-def health_check():
-    import os
-    from config import DB_NAME
-    db_exists = os.path.exists(DB_NAME)
-    return {"status": "ok", "db_exists": db_exists}, 200
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -50,7 +39,6 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# --- Фоновая задача для автоудаления ---
 async def check_expired_files(app):
     while not shutdown_event.is_set():
         try:
@@ -75,23 +63,14 @@ async def check_expired_files(app):
         except Exception as e:
             logger.error(f"Ошибка при проверке просроченных файлов: {e}")
         
-        # Ждём 60 секунд или пока не придёт сигнал завершения
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=60)
         except asyncio.TimeoutError:
             pass
 
-async def shutdown(app):
-    """Graceful shutdown - сохраняем всё перед выходом"""
-    logger.info("🛑 Начинаем graceful shutdown...")
-    await asyncio.sleep(2)
-    logger.info("✅ Бот остановлен. База данных сохранена.")
-
-# --- Запуск ---
 def main():
     init_db()
     
-    # Проверяем что БД существует и сколько в ней файлов
     if os.path.exists("files.db"):
         import sqlite3
         try:
@@ -103,8 +82,6 @@ def main():
             conn.close()
         except Exception as e:
             logger.error(f"Ошибка при проверке БД: {e}")
-    else:
-        logger.warning("⚠️ База данных не найдена, будет создана новая")
     
     app = Application.builder().token(BOT_TOKEN).build()
     set_bot_instance(app.bot)
@@ -134,14 +111,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     
     logger.info("🚀 Бот запущен")
-    
-    try:
-        app.run_polling()
-    except Exception as e:
-        logger.error(f"Ошибка при запуске polling: {e}")
-    finally:
-        shutdown_event.set()
-        loop.run_until_complete(shutdown(app))
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
