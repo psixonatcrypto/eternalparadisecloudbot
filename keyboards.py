@@ -41,36 +41,22 @@ def folder_keyboard(user_id, parent_id=0, files_page=0, sort_by="date", sort_ord
     
     keyboard = []
     
-    # Кнопки сортировки
     sort_buttons = []
-    
-    # Сортировка по дате
     date_icon = "📅✓" if sort_by == "date" else "📅"
     sort_buttons.append(InlineKeyboardButton(date_icon, callback_data=f"sort_date_{parent_id}_{files_page}"))
-    
-    # Сортировка по имени
     name_icon = "🔤✓" if sort_by == "name" else "🔤"
     sort_buttons.append(InlineKeyboardButton(name_icon, callback_data=f"sort_name_{parent_id}_{files_page}"))
-    
-    # Сортировка по размеру
     size_icon = "💾✓" if sort_by == "size" else "💾"
     sort_buttons.append(InlineKeyboardButton(size_icon, callback_data=f"sort_size_{parent_id}_{files_page}"))
-    
-    # Сортировка по скачиваниям
     down_icon = "📊✓" if sort_by == "downloads" else "📊"
     sort_buttons.append(InlineKeyboardButton(down_icon, callback_data=f"sort_downloads_{parent_id}_{files_page}"))
-    
-    # Порядок (возрастание/убывание)
     order_icon = "⬆️" if sort_order == "ASC" else "⬇️"
     sort_buttons.append(InlineKeyboardButton(order_icon, callback_data=f"sort_order_{parent_id}_{files_page}_{sort_by}"))
-    
     keyboard.append(sort_buttons)
     
-    # Папки
     for folder_id, folder_name in folders:
         keyboard.append([InlineKeyboardButton(f"📁 {folder_name}", callback_data=f"open_folder_{folder_id}_{files_page}")])
     
-    # Файлы
     for row in files:
         if len(row) == 7:
             key, filename, created_at, expires_at, downloads_count, is_favorite, file_size = row
@@ -79,8 +65,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0, sort_by="date", sort_ord
             file_size = 0
         
         star = "⭐️ " if is_favorite else ""
-        
-        # Форматируем размер
         size_str = ""
         if file_size and file_size > 0:
             if file_size < 1024:
@@ -102,7 +86,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0, sort_by="date", sort_ord
         
         keyboard.append([InlineKeyboardButton(display_name, callback_data=f"open_file_{key}_{parent_id}_{files_page}_{sort_by}_{sort_order}")])
     
-    # Пагинация
     nav_buttons = []
     if files_page > 0:
         nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"files_page_{parent_id}_{files_page-1}_{sort_by}_{sort_order}"))
@@ -111,7 +94,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0, sort_by="date", sort_ord
     if nav_buttons:
         keyboard.append(nav_buttons)
     
-    # Действия с папками
     if parent_id == 0:
         keyboard.append([InlineKeyboardButton("➕ Новая папка", callback_data=f"new_folder_{parent_id}_{files_page}_{sort_by}_{sort_order}")])
     else:
@@ -119,7 +101,6 @@ def folder_keyboard(user_id, parent_id=0, files_page=0, sort_by="date", sort_ord
     
     keyboard.append([InlineKeyboardButton("📤 Добавить файл", callback_data="upload")])
     
-    # Навигация назад
     if parent_id != 0:
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=f"my_files_back_{parent_id}")])
     else:
@@ -151,7 +132,6 @@ def favorites_keyboard(user_id, page=0, limit=10):
     
     keyboard = []
     for key, filename, created_at, expires_at, downloads_count, file_size in files:
-        # Форматируем размер
         size_str = ""
         if file_size and file_size > 0:
             if file_size < 1024:
@@ -196,8 +176,6 @@ def search_results_keyboard(files, page=0, limit=10):
             file_size = 0
         
         star = "⭐️ " if is_favorite else ""
-        
-        # Форматируем размер
         size_str = ""
         if file_size and file_size > 0:
             if file_size < 1024:
