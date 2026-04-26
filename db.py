@@ -36,7 +36,8 @@ def init_db():
             failed_attempts INTEGER DEFAULT 0,
             blocked_until TIMESTAMP,
             is_favorite INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            file_size INTEGER DEFAULT 0
         )''')
         c.execute('''CREATE TABLE IF NOT EXISTS folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,16 +60,31 @@ def init_db():
         
         c.execute('PRAGMA journal_mode=WAL')
         c.execute('PRAGMA synchronous=NORMAL')
+    
+    # Добавляем колонку file_size если её нет (для существующей БД)
+    try:
+        with Database() as c:
+            c.execute('ALTER TABLE files ADD COLUMN file_size INTEGER DEFAULT 0')
+    except:
+        pass
+    
     logger.info("База данных инициализирована")
 
-def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None, expires_at=None, is_favorite=0):
+def save_file_info(key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id=0, password_hash=None, expires_at=None, is_favorite=0, file_size=0):
     with Database() as c:
-        c.execute('INSERT INTO files (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                  (key, file_id, filename, chat_id, message_id, media_type, user_id, folder_id, password_hash, expires_at, is_favorite))
+        c.execute('''INSERT INTO files 
+            (key, file_id, filename, chat_id, message_id, media_type, user_id, 
+             folder_id, password_hash, expires_at, is_favorite, file_size) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (key, file_id, filename, chat_id, message_id, media_type, user_id, 
+                   folder_id, password_hash, expires_at, is_favorite, file_size))
 
 def get_file_info(key):
     with Database() as c:
-        c.execute('SELECT file_id, filename, media_type, message_id, password_hash, expires_at, downloads_count, failed_attempts, blocked_until, folder_id, user_id, is_favorite FROM files WHERE key = ?', (key,))
+        c.execute('''SELECT file_id, filename, media_type, message_id, password_hash, 
+                            expires_at, downloads_count, failed_attempts, blocked_until, 
+                            folder_id, user_id, is_favorite, file_size 
+                     FROM files WHERE key = ?''', (key,))
         row = c.fetchone()
     if row:
         return {
@@ -76,7 +92,7 @@ def get_file_info(key):
             "message_id": row[3], "password_hash": row[4], "expires_at": row[5],
             "downloads_count": row[6] or 0, "failed_attempts": row[7] or 0,
             "blocked_until": row[8], "folder_id": row[9] or 0, "user_id": row[10],
-            "is_favorite": row[11] or 0
+            "is_favorite": row[11] or 0, "file_size": row[12] or 0
         }
     return None
 
@@ -145,7 +161,7 @@ def toggle_favorite(key, user_id):
 
 def search_files(user_id, query, limit=20):
     with Database() as c:
-        c.execute('''SELECT key, filename, created_at, expires_at, downloads_count, is_favorite 
+        c.execute('''SELECT key, filename, created_at, expires_at, downloads_count, is_favorite, file_size
                      FROM files 
                      WHERE user_id = ? AND (LOWER(filename) LIKE LOWER(?) OR LOWER(key) LIKE LOWER(?))
                      ORDER BY is_favorite DESC, created_at DESC 
@@ -163,13 +179,24 @@ def get_user_folders(user_id, parent_id=0):
         c.execute('SELECT id, name FROM folders WHERE user_id = ? AND parent_id = ? ORDER BY name', (user_id, parent_id))
         return c.fetchall()
 
-def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0):
+def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0, sort_by="date", sort_order="DESC"):
+    """Получает файлы с сортировкой"""
     with Database() as c:
-        c.execute('''
-            SELECT key, filename, created_at, expires_at, downloads_count, is_favorite
+        sort_field = "created_at"
+        if sort_by == "name":
+            sort_field = "filename"
+        elif sort_by == "size":
+            sort_field = "file_size"
+        elif sort_by == "downloads":
+            sort_field = "downloads_count"
+        elif sort_by == "date":
+            sort_field = "created_at"
+        
+        c.execute(f'''
+            SELECT key, filename, created_at, expires_at, downloads_count, is_favorite, file_size
             FROM files 
             WHERE user_id = ? AND folder_id = ? 
-            ORDER BY is_favorite DESC, created_at DESC 
+            ORDER BY is_favorite DESC, {sort_field} {sort_order}
             LIMIT ? OFFSET ?
         ''', (user_id, folder_id, limit, offset))
         rows = c.fetchall()
