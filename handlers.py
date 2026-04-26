@@ -105,13 +105,20 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
         keyboard = folder_keyboard(user_id, parent_id, files_page, sort_by, sort_order)
         
         if query:
-            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-            await query.answer()
+            try:
+                await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+                await query.answer()
+            except Exception as e:
+                # Игнорируем ошибку "Message is not modified"
+                if "Message is not modified" not in str(e):
+                    raise e
+                await query.answer()
         else:
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
     except Exception as e:
-        logger.error(f"Ошибка в my_files: {e}")
-        await send_error_to_admin(f"Ошибка в my_files:\n{traceback.format_exc()}")
+        if "Message is not modified" not in str(e):
+            logger.error(f"Ошибка в my_files: {e}")
+            await send_error_to_admin(f"Ошибка в my_files:\n{traceback.format_exc()}")
 
 async def favorites(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
     try:
@@ -126,8 +133,9 @@ async def favorites(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
         else:
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
     except Exception as e:
-        logger.error(f"Ошибка в favorites: {e}")
-        await send_error_to_admin(f"Ошибка в favorites:\n{traceback.format_exc()}")
+        if "Message is not modified" not in str(e):
+            logger.error(f"Ошибка в favorites: {e}")
+            await send_error_to_admin(f"Ошибка в favorites:\n{traceback.format_exc()}")
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
