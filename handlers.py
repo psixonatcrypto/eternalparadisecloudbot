@@ -109,7 +109,6 @@ async def my_files(update: Update, context: ContextTypes.DEFAULT_TYPE, parent_id
                 await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
                 await query.answer()
             except Exception as e:
-                # Игнорируем ошибку "Message is not modified"
                 if "Message is not modified" not in str(e):
                     raise e
                 await query.answer()
@@ -128,8 +127,13 @@ async def favorites(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
         text = "⭐️ *Ваши избранные файлы:*"
         keyboard = favorites_keyboard(user_id, page)
         if query:
-            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-            await query.answer()
+            try:
+                await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+                await query.answer()
+            except Exception as e:
+                if "Message is not modified" not in str(e):
+                    raise e
+                await query.answer()
         else:
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
     except Exception as e:
@@ -359,6 +363,15 @@ async def send_file_by_info(chat_id, info, key, bot):
 # --- Обработчики файлов и текста ---
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # ✅ ПРОВЕРКА НА ВОССТАНОВЛЕНИЕ БД
+        if (update.effective_user.id == ADMIN_ID and 
+            update.message and 
+            update.message.document and 
+            update.message.document.file_name and 
+            update.message.document.file_name.endswith('.db')):
+            await restore_db(update, context)
+            return
+        
         if not update.message:
             return
         user = update.effective_user
@@ -1048,18 +1061,9 @@ async def backup_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Восстанавливает БД из присланного файла"""
+    # Проверяем, что команду вызвал админ
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Только администратор.")
-        return
-    
-    if not update.message or not update.message.document:
-        await update.message.reply_text(
-            "❌ *Как восстановить БД:*\n\n"
-            "1. Отправьте файл бэкапа (.db)\n"
-            "2. В подписи к файлу напишите `/restore`\n\n"
-            "Или отправьте команду `/restore` и сразу файл.",
-            parse_mode="Markdown"
-        )
         return
     
     import os
@@ -1067,13 +1071,31 @@ async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     import sqlite3
     from config import DB_NAME
     
+    # Определяем откуда взять файл: из документа в сообщении или из ответа
+    document = None
+    if update.message and update.message.document:
+        document = update.message.document
+    elif update.message and update.message.reply_to_message and update.message.reply_to_message.document:
+        document = update.message.reply_to_message.document
+    
+    if not document:
+        await update.message.reply_text(
+            "❌ *Как восстановить БД:*\n\n"
+            "1. Отправьте файл бэкапа (.db)\n"
+            "2. Бот автоматически определит файл и восстановит БД\n\n"
+            "Или отправьте команду `/restore` в ответ на сообщение с файлом.",
+            parse_mode="Markdown"
+        )
+        return
+    
     status_msg = await update.message.reply_text("🔄 Восстановление базы данных...")
     
     try:
-        file = await context.bot.get_file(update.message.document.file_id)
+        file = await context.bot.get_file(document.file_id)
         temp_file = "restore_temp.db"
         await file.download_to_drive(temp_file)
         
+        # Проверяем, что это валидная БД
         try:
             conn = sqlite3.connect(temp_file)
             c = conn.cursor()
@@ -1089,7 +1111,9 @@ async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ Присланный файл не является валидной базой данных!")
             return
         
+        # Делаем бэкап текущей БД (если существует)
         if os.path.exists(DB_NAME):
+            import datetime
             backup_name = f"old_db_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
             shutil.copy(DB_NAME, backup_name)
             await context.bot.send_document(
@@ -1100,14 +1124,9 @@ async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             os.remove(backup_name)
         
+        # Восстанавливаем БД
         shutil.copy(temp_file, DB_NAME)
         os.remove(temp_file)
-        
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM files")
-        new_files_count = c.fetchone()[0]
-        conn.close()
         
         await status_msg.edit_text(
             f"✅ *База данных восстановлена!*\n\n"
