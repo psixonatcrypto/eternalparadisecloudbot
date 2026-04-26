@@ -61,7 +61,6 @@ def init_db():
         c.execute('PRAGMA journal_mode=WAL')
         c.execute('PRAGMA synchronous=NORMAL')
     
-    # Добавляем колонку file_size если её нет (для существующей БД)
     try:
         with Database() as c:
             c.execute('ALTER TABLE files ADD COLUMN file_size INTEGER DEFAULT 0')
@@ -180,7 +179,6 @@ def get_user_folders(user_id, parent_id=0):
         return c.fetchall()
 
 def get_user_files_in_folder(user_id, folder_id=0, limit=10, offset=0, sort_by="date", sort_order="DESC"):
-    """Получает файлы с сортировкой"""
     with Database() as c:
         sort_field = "created_at"
         if sort_by == "name":
