@@ -363,20 +363,29 @@ async def send_file_by_info(chat_id, info, key, bot):
 # --- Обработчики файлов и текста ---
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # ✅ ПРОВЕРКА НА ВОССТАНОВЛЕНИЕ БД
-        if (update.effective_user.id == ADMIN_ID and 
-            update.message and 
+        # ✅ ПРОВЕРКА НА ВОССТАНОВЛЕНИЕ БД (без обращения к effective_user)
+        if (update.message and 
             update.message.document and 
             update.message.document.file_name and 
             update.message.document.file_name.endswith('.db')):
-            await restore_db(update, context)
-            return
+            # Проверяем админа только если есть effective_user
+            if update.effective_user and update.effective_user.id == ADMIN_ID:
+                await restore_db(update, context)
+                return
+            else:
+                await update.message.reply_text("⛔ Только администратор может восстанавливать БД.")
+                return
         
         if not update.message:
             return
+        
         user = update.effective_user
         if user:
             save_user(user.id, user.first_name, user.username)
+        else:
+            # Если нет пользователя (например, из канала) — игнорируем
+            await update.message.reply_text("❌ Не удалось определить отправителя.")
+            return
 
         message = update.effective_message
         file_size = 0
@@ -1062,7 +1071,7 @@ async def backup_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Восстанавливает БД из присланного файла"""
     # Проверяем, что команду вызвал админ
-    if update.effective_user.id != ADMIN_ID:
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Только администратор.")
         return
     
@@ -1214,6 +1223,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 key = parts[2]
                 parent_id = int(parts[3]) if len(parts) > 3 else 0
                 files_page = int(parts[4]) if len(parts) > 4 else 0
+                sort_by = parts[5] if len(parts) > 5 else context.user_data.get('sort_by', 'date')
+                sort_order = parts[6] if len(parts) > 6 else context.user_data.get('sort_order', 'DESC')
                 await open_file(update, context, key, parent_id, files_page)
             except:
                 await query.answer("Ошибка", show_alert=True)
